@@ -81,7 +81,7 @@ import struct
 # Send a 32-bit integer (1234) + extra byte (5)
 message = struct.pack('<I', 1234) + bytes([5])
 
-# Send a float (3.14) + extra byte (10)  
+# Send a float (3.14) + extra byte (10)
 message = struct.pack('<f', 3.14) + bytes([10])
 
 # Send 5 individual bytes
@@ -148,8 +148,8 @@ def _socket_listener(self):
     while self.running:
         client_socket, client_address = self.server_socket.accept()
         client_thread = threading.Thread(
-            target=self._handle_client, 
-            args=(client_socket,), 
+            target=self._handle_client,
+            args=(client_socket,),
             daemon=True
         )
         client_thread.start()
