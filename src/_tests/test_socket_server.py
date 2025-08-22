@@ -54,13 +54,13 @@ def test_single_message(server_setup):
     time.sleep(0.1)  # Give server time to start
 
     # Connect and send a message
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    source_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect(("localhost", 9999))
+        source_socket.connect(("localhost", 9999))
 
         # Send a 5-byte message: int(1234) + byte(5)
         message = struct.pack("<I", 1234) + bytes([5])
-        client_socket.sendall(message)
+        source_socket.sendall(message)
 
         # Wait for processing
         time.sleep(0.2)
@@ -75,7 +75,7 @@ def test_single_message(server_setup):
         assert received_data[0] == 1234
 
     finally:
-        client_socket.close()
+        source_socket.close()
 
 
 def test_multiple_messages(server_setup):
@@ -85,15 +85,15 @@ def test_multiple_messages(server_setup):
     server.start()
     time.sleep(0.1)
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    source_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect(("localhost", 9999))
+        source_socket.connect(("localhost", 9999))
 
         # Send multiple messages
         test_values = [100, 200, 300, 400, 500]
         for value in test_values:
             message = struct.pack("<I", value) + bytes([0])
-            client_socket.sendall(message)
+            source_socket.sendall(message)
 
         # Wait for processing
         time.sleep(0.3)
@@ -108,7 +108,7 @@ def test_multiple_messages(server_setup):
         assert received_values == expected_values
 
     finally:
-        client_socket.close()
+        source_socket.close()
 
 
 def test_data_array_operations(server_setup):
@@ -128,11 +128,11 @@ def test_data_array_operations(server_setup):
     server.start()
     time.sleep(0.1)
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    source_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect(("localhost", 9999))
+        source_socket.connect(("localhost", 9999))
         message = struct.pack("<I", 999) + bytes([0])
-        client_socket.sendall(message)
+        source_socket.sendall(message)
         time.sleep(0.2)
 
         # Check data exists
@@ -145,7 +145,7 @@ def test_data_array_operations(server_setup):
         assert len(data) == 0
 
     finally:
-        client_socket.close()
+        source_socket.close()
 
 
 def test_queue_size(server_setup):
@@ -186,13 +186,13 @@ def test_parametrized_messages(server_setup, test_value, extra_byte):
     server.start()
     time.sleep(0.1)
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    source_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect(("localhost", 9999))
+        source_socket.connect(("localhost", 9999))
 
         # Send message with test parameters
         message = struct.pack("<I", test_value) + bytes([extra_byte])
-        client_socket.sendall(message)
+        source_socket.sendall(message)
 
         # Wait for processing
         time.sleep(0.2)
@@ -203,7 +203,7 @@ def test_parametrized_messages(server_setup, test_value, extra_byte):
         assert data_array[0] == test_value
 
     finally:
-        client_socket.close()
+        source_socket.close()
 
 
 def test_server_callback_error_handling(server_setup):
@@ -218,12 +218,12 @@ def test_server_callback_error_handling(server_setup):
     server.start()
     time.sleep(0.1)
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    source_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect(("localhost", 9999))
+        source_socket.connect(("localhost", 9999))
 
         message = struct.pack("<I", 123) + bytes([0])
-        client_socket.sendall(message)
+        source_socket.sendall(message)
 
         # Wait for processing
         time.sleep(0.2)
@@ -236,7 +236,7 @@ def test_server_callback_error_handling(server_setup):
         assert data_array[0] == 123
 
     finally:
-        client_socket.close()
+        source_socket.close()
 
 
 @pytest.fixture
@@ -250,32 +250,32 @@ def temp_server():
 
 
 def test_concurrent_clients(temp_server):
-    """Test multiple clients sending data concurrently."""
+    """Test multiple sources sending data concurrently."""
     server = temp_server
     server.start()
     time.sleep(0.1)
 
-    def send_messages(client_id, num_messages):
-        """Send messages from a single client."""
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def send_messages(source_id, num_messages):
+        """Send messages from a single source."""
+        source_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            client_socket.connect(("localhost", 9998))
+            source_socket.connect(("localhost", 9998))
             for i in range(num_messages):
-                value = client_id * 1000 + i
-                message = struct.pack("<I", value) + bytes([client_id])
-                client_socket.sendall(message)
+                value = source_id * 1000 + i
+                message = struct.pack("<I", value) + bytes([source_id])
+                source_socket.sendall(message)
                 time.sleep(0.01)  # Small delay between messages
         finally:
-            client_socket.close()
+            source_socket.close()
 
-    # Start multiple client threads
+    # Start multiple source threads
     threads = []
-    for client_id in range(3):
-        thread = threading.Thread(target=send_messages, args=(client_id, 5))
+    for source_id in range(3):
+        thread = threading.Thread(target=send_messages, args=(source_id, 5))
         threads.append(thread)
         thread.start()
 
-    # Wait for all clients to finish
+    # Wait for all sources to finish
     for thread in threads:
         thread.join()
 
@@ -284,7 +284,7 @@ def test_concurrent_clients(temp_server):
 
     # Check that all messages were received
     data_array = server.get_data_array()
-    assert len(data_array) == 15  # 3 clients * 5 messages each
+    assert len(data_array) == 15  # 3 sources * 5 messages each
 
 
 if __name__ == "__main__":

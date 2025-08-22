@@ -47,8 +47,8 @@ def main():
         server.start()
 
         print("🔍 Server is running and waiting for connections...")
-        print("💡 To test the server, run the test client:")
-        print("   python -m splash_timepix.test_client")
+        print("💡 To test the server, run the test source:")
+        print("   python -m splash_timepix.test_source")
         print("🛑 Press Ctrl+C to stop the server")
         print()
 
