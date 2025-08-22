@@ -6,29 +6,36 @@ This script demonstrates the socket server functionality.
 
 import subprocess
 import time
+import os
+from pathlib import Path
 
+# Get the directory of the current script, python venv, and project
+SCRIPT_DIR = Path(__file__).parent.resolve()
+if os.name == "nt": # windows
+    VENV_PYTHON = SCRIPT_DIR / ".venv" / "Scripts" / "python.exe"
+else:
+    VENV_PYTHON = SCRIPT_DIR / ".venv" / "bin" / "python"
+PROJECT_DIR = SCRIPT_DIR / "src"
 
 def run_server():
     """Run the server in a subprocess."""
-    python_path = "/Users/dylanmcreynolds/dev/splash_timepix/.venv/bin/python"
-    server_cmd = [python_path, "-m", "splash_timepix.example"]
+    server_cmd = [str(VENV_PYTHON), "-m", "splash_timepix.example"]
 
     print("🚀 Starting server...")
     server_process = subprocess.Popen(
-        server_cmd, cwd="/Users/dylanmcreynolds/dev/splash_timepix"
+        server_cmd, cwd=str(PROJECT_DIR)
     )
     return server_process
 
 
 def run_client():
     """Run the test client in a subprocess."""
-    python_path = "/Users/dylanmcreynolds/dev/splash_timepix/.venv/bin/python"
-    client_cmd = [python_path, "-m", "splash_timepix.test_client"]
+    client_cmd = [str(VENV_PYTHON), "-m", "splash_timepix.test_client"]
 
     print("📡 Starting test client...")
     client_process = subprocess.Popen(
         client_cmd,
-        cwd="/Users/dylanmcreynolds/dev/splash_timepix",
+        cwd=str(PROJECT_DIR),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
