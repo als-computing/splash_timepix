@@ -1,7 +1,7 @@
 """
-Test client for the SocketDataServer.
+Test source for the SocketDataServer.
 
-This script creates a client that connects to the server and sends 5-byte messages
+This script creates a source that connects to the server and sends 5-byte messages
 to test the socket server functionality.
 """
 
@@ -13,12 +13,12 @@ import time
 from typing import Optional
 
 
-class TestClient:
-    """A test client that sends 5-byte messages to the socket server."""
+class TestSource:
+    """A test source that sends 5-byte messages to the socket server."""
 
     def __init__(self, host: str = "localhost", port: int = 8888):
         """
-        Initialize the test client.
+        Initialize the test source.
 
         Args:
             host: Server host address
@@ -133,9 +133,9 @@ class TestClient:
 
 def send_test_data():
     """Send some predefined test data."""
-    client = TestClient()
+    source = TestSource()
 
-    if not client.connect():
+    if not source.connect():
         return
 
     try:
@@ -144,7 +144,7 @@ def send_test_data():
 
         for i, value in enumerate(test_values):
             extra_byte = i + 1
-            if client.send_message(value, extra_byte):
+            if source.send_message(value, extra_byte):
                 print(f"Sent: value={value}, extra_byte={extra_byte}")
             time.sleep(0.5)
 
@@ -153,18 +153,18 @@ def send_test_data():
     except KeyboardInterrupt:
         print("Interrupted by user")
     finally:
-        client.disconnect()
+        source.disconnect()
 
 
-def interactive_client():
-    """Run an interactive client."""
-    client = TestClient()
+def interactive_source():
+    """Run an interactive source."""
+    source = TestSource()
 
-    if not client.connect():
+    if not source.connect():
         return
 
     try:
-        print("Interactive client started. Commands:")
+        print("Interactive source started. Commands:")
         print("  'send <value> [extra_byte]' - Send a specific message")
         print("  'auto <interval> [count]' - Start auto-sending")
         print("  'stop' - Stop auto-sending")
@@ -188,7 +188,7 @@ def interactive_client():
                     value = int(command[1])
                     extra_byte = int(command[2]) if len(command) > 2 else 0
 
-                    if client.send_message(value, extra_byte):
+                    if source.send_message(value, extra_byte):
                         print(f"Sent: value={value}, extra_byte={extra_byte}")
 
                 elif command[0] == "auto":
@@ -199,10 +199,10 @@ def interactive_client():
                     interval = float(command[1])
                     count = int(command[2]) if len(command) > 2 else None
 
-                    client.start_auto_sending(interval, count)
+                    source.start_auto_sending(interval, count)
 
                 elif command[0] == "stop":
-                    client.stop_auto_sending()
+                    source.stop_auto_sending()
 
                 else:
                     print(f"Unknown command: {command[0]}")
@@ -213,13 +213,13 @@ def interactive_client():
                 break
 
     finally:
-        client.stop_auto_sending()
-        client.disconnect()
+        source.stop_auto_sending()
+        source.disconnect()
 
 
 def main():
     """Main function to choose between test modes."""
-    print("Socket Server Test Client")
+    print("Socket Server Test Source")
     print("1. Send test data")
     print("2. Interactive mode")
 
@@ -229,7 +229,7 @@ def main():
         if choice == "1":
             send_test_data()
         elif choice == "2":
-            interactive_client()
+            interactive_source()
         else:
             print("Invalid choice")
 
