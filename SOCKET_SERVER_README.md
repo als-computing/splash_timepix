@@ -13,14 +13,14 @@ This implementation provides:
 ## Architecture
 
 ```
-Client → Socket → Thread 1 (Reader) → Queue → Thread 2 (Processor) → NumPy Array
+Source → Socket → Thread 1 (Reader) → Queue → Thread 2 (Processor) → NumPy Array
 ```
 
 ### Thread 1: Socket Reader
 - Listens for incoming connections on specified host/port
-- Reads exactly 5 bytes per message from each client
+-- Reads exactly 5 bytes per message from each source
 - Puts messages into a thread-safe queue
-- Handles multiple clients (one at a time currently)
+- Handles multiple sources (one at a time currently)
 
 ### Thread 2: Data Processor
 - Continuously processes messages from the queue
@@ -61,8 +61,8 @@ server.stop()
 # Start the server
 python -m splash_timepix.example
 
-# In another terminal, run the test client
-python -m splash_timepix.test_client
+# In another terminal, run the test source
+python -m splash_timepix.test_source
 ```
 
 ## Data Format
@@ -88,9 +88,10 @@ message = struct.pack('<f', 3.14) + bytes([10])
 message = bytes([0x01, 0x02, 0x03, 0x04, 0x05])
 ```
 
-## Test Client
+## Test Source
 
-The included test client (`test_client.py`) provides:
+
+The included test source (`test_source.py`) provides:
 
 1. **Test Mode**: Sends predefined test data
 2. **Interactive Mode**: Manual message sending with commands:
@@ -120,7 +121,7 @@ SocketDataServer(host='localhost', port=8888, buffer_size=1000)
 
 - **Buffer Size**: Adjust `buffer_size` based on expected message rate
 - **Data Storage**: The numpy array grows continuously; consider periodic clearing
-- **Threading**: Currently handles one client at a time; can be extended for multiple concurrent clients
+- **Threading**: Currently handles one source at a time; can be extended for multiple concurrent sources
 - **Memory Usage**: Monitor memory usage for long-running servers
 
 ## Customization
@@ -138,21 +139,21 @@ flag = message[4]  # Flag byte
 bytes_array = np.frombuffer(message, dtype=np.uint8)
 ```
 
-### Adding Multiple Client Support
+### Adding Multiple Source Support
 
-Extend `_handle_client` to spawn separate threads for each client:
+Extend `_handle_source` to spawn separate threads for each source:
 
 ```python
 def _socket_listener(self):
     # ... existing code ...
     while self.running:
-        client_socket, client_address = self.server_socket.accept()
-        client_thread = threading.Thread(
-            target=self._handle_client,
-            args=(client_socket,),
+        source_socket, source_address = self.server_socket.accept()
+        source_thread = threading.Thread(
+            target=self._handle_source,
+            args=(source_socket,),
             daemon=True
         )
-        client_thread.start()
+        source_thread.start()
 ```
 
 ## Error Handling

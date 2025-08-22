@@ -1,0 +1,71 @@
+# Pre-commit configuration for splash_timepix
+# See https://pre-commit.com for more information
+
+repos:
+  # Built-in pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      # File format and syntax checks
+      - id: trailing-whitespace
+        description: Trims trailing whitespace
+      - id: end-of-file-fixer
+        description: Ensures files end with a newline
+      - id: check-yaml
+        description: Checks yaml files for parseable syntax
+      - id: check-toml
+        description: Checks toml files for parseable syntax
+      - id: check-json
+        description: Checks json files for parseable syntax
+
+      # Python-specific checks
+      - id: check-ast
+        description: Check whether files parse as valid python
+      - id: debug-statements
+        description: Check for debugger imports and breakpoint() calls
+
+      # Security and merge conflict checks
+      - id: check-merge-conflict
+        description: Check for files that contain merge conflict strings
+      - id: check-added-large-files
+        description: Prevent giant files from being committed
+        args: ['--maxkb=1000']
+
+  # Black - Python code formatter
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        description: Format Python code with Black
+        language_version: python3
+        args: ['--line-length=88']
+
+  # isort - Import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        description: Sort Python imports
+        args: ['--profile=black', '--line-length=88']
+
+  # flake8 - Python linting (basic checks only)
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.0
+    hooks:
+      - id: flake8
+        description: Lint Python code with flake8
+        args: [
+          '--max-line-length=88',
+          '--extend-ignore=E203,W503,D',  # Ignore conflicts with Black and docstring checks
+          '--max-complexity=15',
+          '--exclude=src/_tests/'
+        ]
+
+# Configuration for CI mode
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit hooks
+  autofix_prs: true
+  autoupdate_schedule: weekly
+  skip: []
+  submodules: false
