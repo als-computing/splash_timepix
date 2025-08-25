@@ -2,7 +2,7 @@
 Example usage of the SocketDataServer.
 
 This script demonstrates how to set up and use the multi-threaded socket server
-that reads 5-byte messages and processes them into numpy arrays.
+that reads (simulated) TimePix3 messages and processes them into numpy arrays.
 """
 
 import time
@@ -23,20 +23,14 @@ def main():
     server = SocketDataServer(host="localhost", port=8888, buffer_size=1000)
 
     # Set up a callback to handle new data
-    data_history = []
-
+    event_count = 0
+    
     def data_callback(new_data: np.ndarray) -> None:
         """Callback function called when new data is processed."""
-        data_history.extend(new_data.tolist())
-        print(f"📊 New data: {new_data[0]} (Total received: {len(data_history)})")
-
-        # Show statistics every 10 data points
-        if len(data_history) % 10 == 0:
-            array = np.array(data_history)
-            print(
-                f"📈 Stats - Count: {len(array)}, Mean: {np.mean(array):.2f}, "
-                f"Min: {np.min(array)}, Max: {np.max(array)}"
-            )
+        nonlocal event_count
+        event_count += len(new_data)
+        print(f"📊 Received {len(new_data)} new events (Total: {event_count})")
+        #$% should this include a call to a qt plot?
 
     # Set the callback
     server.set_data_callback(data_callback)
@@ -55,45 +49,42 @@ def main():
         # Keep the main thread alive and show periodic stats
         start_time = time.time()
         last_stats_time = start_time
+        stats_history = []
+        stats_length = 5 # length of shift register
+        stats_update_time = 1 # seconds
 
         while True:
             time.sleep(1)
             current_time = time.time()
 
-            # Show stats every 30 seconds
-            if current_time - last_stats_time >= 30:
+            # Show/ update stats
+            if current_time - last_stats_time >= stats_update_time:
                 data_array = server.get_data_array()
                 queue_size = server.get_queue_size()
                 uptime = current_time - start_time
 
-                print(f"⏱️  Server uptime: {uptime:.0f}s")
-                print(f"📦 Queue size: {queue_size}")
-                print(f"📊 Total data points: {len(data_array)}")
+                stats = (
+                    f"⏱️  Server uptime: {uptime:.0f}s\n"
+                    f"📦 Queue size: {queue_size}\n"
+                    f"📊 Total data points: {np.sum(data_array)}\n"
+                    + "-" * 30
+                )
 
-                if len(data_array) > 0:
-                    recent_values = (
-                        data_array[-5:] if len(data_array) >= 5 else data_array
-                    )
-                    print(f"🔢 Recent values: {recent_values}")
+                stats_history.append(stats)
+                if len(stats_history) > stats_length:
+                    stats_history.pop(0)
 
-                print("-" * 30)
+                # Clear the terminal and print the stats shift register
+                import os
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print(f"Last {stats_length} stats:\n")
+                for s in stats_history:
+                    print(s)
                 last_stats_time = current_time
 
     except KeyboardInterrupt:
         print("\n🛑 Shutting down server...")
         server.stop()
-
-        # Show final statistics
-        final_data = server.get_data_array()
-        print("📊 Final statistics:")
-        print(f"   Total data points processed: {len(final_data)}")
-
-        if len(final_data) > 0:
-            print(f"   Mean value: {np.mean(final_data):.2f}")
-            print(f"   Min value: {np.min(final_data)}")
-            print(f"   Max value: {np.max(final_data)}")
-            print(f"   Standard deviation: {np.std(final_data):.2f}")
-
         print("✅ Server stopped successfully")
 
 
