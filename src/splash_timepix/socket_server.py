@@ -1,9 +1,10 @@
-"""Socket server that reads 5-byte messages and processes them into numpy arrays.
+"""Socket server that reads TimePix3 messages and processes them into data.
 
 This module implements a multi-threaded server that:
 1. Listens for incoming socket connections
-2. Reads 5-byte messages from clients on one thread
-3. Processes those messages into numpy arrays on another thread
+2. Reads 12-byte messages from data sources (TimePix3) on one thread
+3. Processes those messages into data on another thread. 
+This data can be used for downstream UI and data analysis applications.
 """
 
 import logging
@@ -13,8 +14,11 @@ import struct
 import threading
 import time
 from typing import Callable, Optional
-
 import numpy as np
+
+from splash_timepix.simulator import SimulatorConfig
+from splash_timepix.parser import PacketParser, PacketType, PixelPacket, TDCPacket, ControlPacket
+
 
 # Configure logging
 logging.basicConfig(
@@ -24,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 class SocketDataServer:
-    """A multi-threaded server that reads 5-byte messages from a socket
-    and converts them to numpy arrays."""
+    """
+    A multi-threaded server that reads 12-byte TimePix3 messages from a socket,
+    and averages all pixel events into one 2D image (numpy array) for now.
+    """
 
     def __init__(
         self, host: str = "localhost", port: int = 8888, buffer_size: int = 1000
@@ -53,12 +59,20 @@ class SocketDataServer:
         # Socket
         self.server_socket: Optional[socket.socket] = None
 
+        # Parser instance
+        self.parser = PacketParser()
+
+        # Detector size from simulator config
+        self.detector_size_x = SimulatorConfig.detector_size_x
+        self.detector_size_y = SimulatorConfig.detector_size_y
+
         # Storage for processed data
-        self.data_array = np.array([], dtype=np.int32)
+        self.data_array = np.zeros((self.detector_size_x, self.detector_size_y), dtype=np.uint32)
         self.data_lock = threading.Lock()
 
         # Callback for when new data is processed
         self.data_callback: Optional[Callable[[np.ndarray], None]] = None
+
 
     def set_data_callback(self, callback: Callable[[np.ndarray], None]) -> None:
         """
@@ -68,6 +82,7 @@ class SocketDataServer:
             callback: Function that takes a numpy array as argument
         """
         self.data_callback = callback
+
 
     def start(self) -> None:
         """Start the server and both processing threads."""
@@ -88,6 +103,7 @@ class SocketDataServer:
         self.processor_thread.start()
 
         logger.info(f"Server started on {self.host}:{self.port}")
+
 
     def stop(self) -> None:
         """Stop the server and all threads."""
@@ -110,9 +126,10 @@ class SocketDataServer:
 
         logger.info("Server stopped")
 
+
     def _socket_listener(self) -> None:
         """
-        Thread function that listens for socket connections and reads 5-byte messages.
+        Thread function that listens for socket connections and reads messages.
         """
         try:
             # Create and configure server socket
@@ -145,26 +162,26 @@ class SocketDataServer:
 
     def _handle_client(self, client_socket: socket.socket) -> None:
         """
-        Handle a single client connection, reading 5-byte messages.
+        Handle a single client connection, reading messages.
 
         Args:
             client_socket: The client socket to read from
         """
         try:
             while self.running:
-                # Read exactly 5 bytes
+                # Read exactly 12 bytes
                 data = b""
-                while len(data) < 5:
-                    chunk = client_socket.recv(5 - len(data))
+                while len(data) < 12:
+                    chunk = client_socket.recv(12 - len(data))
                     if not chunk:
                         logger.info("Client disconnected")
                         return
                     data += chunk
 
-                # Add the 5-byte message to the queue
+                # Add the 12-byte message to the queue
                 try:
                     self.message_queue.put(data, timeout=1.0)
-                    logger.debug(f"Received 5-byte message: {data.hex()}")
+                    logger.debug(f"Received 12-byte message: {data.hex()}")
                 except queue.Full:
                     logger.warning("Message queue is full, dropping message")
 
@@ -173,39 +190,36 @@ class SocketDataServer:
         finally:
             client_socket.close()
 
+
     def _data_processor(self) -> None:
         """
-        Thread function that processes 5-byte messages from the queue into numpy arrays.
+        Thread function that processes messages from the queue into numpy arrays.
         """
         logger.info("Data processor thread started")
-
         while self.running or not self.message_queue.empty():
             try:
                 # Get a message from the queue (with timeout to allow graceful shutdown)
                 message = self.message_queue.get(timeout=1.0)
+                # Parse the packet directly
+                packet = self.parser.parse(message)
+                if isinstance(packet, PixelPacket):
+                    x, y = packet.x, packet.y
+                    if 0 <= x < self.detector_size_x and 0 <= y < self.detector_size_y:
+                        with self.data_lock: # Add to numpy array (thread-safe)
+                            self.data_array[x, y] += 1
+                        if self.data_callback: # Call the callback if set
+                            self.data_callback(np.array([[x, y]]))
+                    logger.debug(f"Processed pixel: ({x}, {y})")
 
-                # Process the 5-byte message
-                # Convert 5 bytes to a number (modify based on your data format)
-                # Treating first 4 bytes as int32, ignoring the 5th byte
-                # You can modify this based on your specific data format
-                if len(message) == 5:
-                    # Example: first 4 bytes as little-endian int32, 5th as uint8
-                    value = struct.unpack("<I", message[:4])[0]  # Little-endian uint
-                    extra_byte = message[4]
+                elif isinstance(packet, TDCPacket):
+                    #$% Add TDC packet processing 
+                    logger.info(f"Received TDC packet: {packet}")
 
-                    # You could also interpret it differently, e.g.:
-                    # value = struct.unpack('<f', message[:4])[0]  # As float
-                    # Or use all 5 bytes in some other way
+                elif isinstance(packet, ControlPacket):
+                    logger.info(f"Received control packet: {packet}")
 
-                    logger.debug(f"Processed value: {value}, extra byte: {extra_byte}")
-
-                    # Add to numpy array (thread-safe)
-                    with self.data_lock:
-                        self.data_array = np.append(self.data_array, value)
-
-                    # Call the callback if set
-                    if self.data_callback:
-                        self.data_callback(np.array([value]))
+                else:
+                    logger.warning(f"Unknown packet type: {type(packet)}")
 
                 # Mark task as done
                 self.message_queue.task_done()
@@ -218,6 +232,7 @@ class SocketDataServer:
 
         logger.info("Data processor thread finished")
 
+
     def get_data_array(self) -> np.ndarray:
         """
         Get a copy of the current data array.
@@ -228,10 +243,12 @@ class SocketDataServer:
         with self.data_lock:
             return self.data_array.copy()
 
+
     def clear_data_array(self) -> None:
         """Clear the data array."""
         with self.data_lock:
             self.data_array = np.array([], dtype=np.int32)
+
 
     def get_queue_size(self) -> int:
         """Get the current size of the message queue."""
@@ -259,14 +276,13 @@ def main():
         while True:
             time.sleep(1)
 
-            # Print some stats every 10 seconds
+            # Print/update stats every 10 seconds
             if int(time.time()) % 10 == 0:
                 data = server.get_data_array()
                 queue_size = server.get_queue_size()
-                print(f"Data array size: {len(data)}, Queue size: {queue_size}")
+                print(f"Total counts (pixel events): {np.sum(data)}, Queue size: {queue_size}")
+                #$% plot image data here?
 
-                if len(data) > 0:
-                    print(f"Latest values: {data[-5:] if len(data) >= 5 else data}")
 
     except KeyboardInterrupt:
         print("\nShutting down server...")

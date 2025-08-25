@@ -1,6 +1,6 @@
 # Socket Data Server
 
-A multi-threaded Python server that reads 5-byte messages from a socket and processes them into numpy arrays.
+A multi-threaded Python server that reads messages from a socket and processes them into numpy arrays.
 
 ## Overview
 
@@ -18,7 +18,7 @@ Source → Socket → Thread 1 (Reader) → Queue → Thread 2 (Processor) → N
 
 ### Thread 1: Socket Reader
 - Listens for incoming connections on specified host/port
--- Reads exactly 5 bytes per message from each source
+- Reads exactly 12 bytes per message from each source
 - Puts messages into a thread-safe queue
 - Handles multiple sources (one at a time currently)
 
@@ -49,7 +49,7 @@ server.start()
 
 # Get processed data
 data = server.get_data_array()
-print(f"Total data points: {len(data)}")
+print(f"Total number of events: {np.sum(data)}")
 
 # Stop the server
 server.stop()
@@ -67,37 +67,19 @@ python -m splash_timepix.test_source
 
 ## Data Format
 
-The server expects exactly 5 bytes per message. Currently, it interprets them as:
-- **Bytes 0-3**: Little-endian unsigned 32-bit integer (main value)
-- **Byte 4**: Additional byte (currently unused but available)
+The server expects exactly 12 bytes per message. See "ASI" directory for documentation.
+The `_data_processor` method is calling the parser and processing the data.
 
-You can modify the `_data_processor` method to change how the 5 bytes are interpreted.
-
-### Example Message Formats
-
-```python
-import struct
-
-# Send a 32-bit integer (1234) + extra byte (5)
-message = struct.pack('<I', 1234) + bytes([5])
-
-# Send a float (3.14) + extra byte (10)
-message = struct.pack('<f', 3.14) + bytes([10])
-
-# Send 5 individual bytes
-message = bytes([0x01, 0x02, 0x03, 0x04, 0x05])
-```
 
 ## Test Source
 
 
-The included test source (`test_source.py`) provides:
-
-1. **Test Mode**: Sends predefined test data
-2. **Interactive Mode**: Manual message sending with commands:
-   - `send <value> [extra_byte]` - Send specific message
-   - `auto <interval> [count]` - Auto-send random messages
-   - `stop` - Stop auto-sending
+The included test source (`test_source.py`) provides an interface
+for the user to modify, start, and stop the message stream:
+   - `cps <value>` - Set count rate of pixel events (per second)
+   - `tdc <value>` - Set TDC Frequency (Hz)
+   - `start <duration>` - Send events for duration (seconds)
+   - `stop` - Stop sending events
    - `quit` - Exit
 
 ## API Reference
@@ -123,38 +105,6 @@ SocketDataServer(host='localhost', port=8888, buffer_size=1000)
 - **Data Storage**: The numpy array grows continuously; consider periodic clearing
 - **Threading**: Currently handles one source at a time; can be extended for multiple concurrent sources
 - **Memory Usage**: Monitor memory usage for long-running servers
-
-## Customization
-
-### Changing Data Interpretation
-
-Modify the `_data_processor` method to change how 5-byte messages are processed:
-
-```python
-# Example: Treat as 4-byte float + 1-byte flag
-value = struct.unpack('<f', message[:4])[0]  # Float
-flag = message[4]  # Flag byte
-
-# Example: Treat as 5 individual bytes
-bytes_array = np.frombuffer(message, dtype=np.uint8)
-```
-
-### Adding Multiple Source Support
-
-Extend `_handle_source` to spawn separate threads for each source:
-
-```python
-def _socket_listener(self):
-    # ... existing code ...
-    while self.running:
-        source_socket, source_address = self.server_socket.accept()
-        source_thread = threading.Thread(
-            target=self._handle_source,
-            args=(source_socket,),
-            daemon=True
-        )
-        source_thread.start()
-```
 
 ## Error Handling
 

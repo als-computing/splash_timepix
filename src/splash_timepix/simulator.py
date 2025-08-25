@@ -119,15 +119,15 @@ class PacketBuilder:
 class SimulatorConfig:
     """Configuration for the packet simulator"""
 
-    pixel_count_rate: float = 1000.0  # Average pixels per second
+    pixel_count_rate: float = 1000.0  # Average counts per second
     tdc_frequency: float = 0.1  # TDC pulses per second (e.g., 0.1 Hz = every 10s)
     tdc_channel: int = 1  # Which TDC channel to use
     tdc_pulse_width_ns: float = 100.0  # Width of TDC pulse in nanoseconds
     tot_mean: float = 100.0  # Mean time-over-threshold value
     tot_sigma: float = 20.0  # Standard deviation for ToT
-    detector_size_x: int = 1024  # Detector width
-    detector_size_y: int = 1024  # Detector height
-    include_control_packets: bool = True  # Whether to generate control packets
+    detector_size_x: int = 256  # Detector width
+    detector_size_y: int = 256  # Detector height
+    include_control_packets: bool = False  # Whether to generate control packets
     control_packet_interval: float = 1.0  # Seconds between control sequences
 
 
@@ -172,7 +172,8 @@ class PacketSimulator:
         """Get current timestamp based on elapsed real time"""
         elapsed_time = time.time() - self.start_real_time
         elapsed_ticks = int(elapsed_time * TIMESTAMP_CLOCK_MHZ * 1_000_000)
-        return self.start_timestamp + elapsed_ticks
+        # add modulo 56 bits to ensure wrap-around
+        return (self.start_timestamp + elapsed_ticks) % (1 << 56)
 
     def generate_pixel_event(self) -> bytes:
         """Generate a single pixel event with random position and ToT"""
@@ -230,7 +231,7 @@ class PacketSimulator:
         TDC pulses occur at fixed frequency.
 
         Args:
-            duration_seconds: How long to generate packets
+            duration_seconds: How long to generate packets for
 
         Yields:
             Packet bytes in chronological order
