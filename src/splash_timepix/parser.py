@@ -127,8 +127,9 @@ class PacketParser:
         if len(data) != self.packet_size:
             raise ValueError(f"Expected {self.packet_size} bytes, got {len(data)}")
 
-        # Convert 12 bytes directly to a 96-bit integer (little-endian)
-        full_value = int.from_bytes(data, byteorder="little")
+        # Convert 12 bytes directly to a 96-bit integer
+        full_value = int.from_bytes(data, byteorder="big")
+        #full_value = int.from_bytes(data, byteorder="little")
 
         # Extract common fields
         packet_type = (full_value >> 92) & 0xF  # bits 92-95
