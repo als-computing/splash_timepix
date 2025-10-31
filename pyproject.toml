@@ -26,7 +26,7 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
-dependencies = ["numpy"]
+dependencies = ["numpy", "typer"]
 
 [project.optional-dependencies]
 dev = ["check-manifest", "pytest", "pre-commit", "black", "flake8", "isort"]

@@ -62,7 +62,7 @@ class PacketBuilder:
         pixel_data = reserved | (y << 6) | (x << 16) | (tot << 26)
         full_value = pixel_data | (timestamp << 36) | (packet_type << 92)
 
-        return full_value.to_bytes(12, byteorder="little")
+        return full_value.to_bytes(12, byteorder="big")
 
     @staticmethod
     def build_tdc_packet(
@@ -89,7 +89,7 @@ class PacketBuilder:
         tdc_data = reserved | (edge << 29) | (channel << 30)
         full_value = tdc_data | (timestamp << 36) | (packet_type << 92)
 
-        return full_value.to_bytes(12, byteorder="little")
+        return full_value.to_bytes(12, byteorder="big")
 
     @staticmethod
     def build_control_packet(timestamp: int, subtype: int, reserved: int = 0) -> bytes:
@@ -112,14 +112,14 @@ class PacketBuilder:
         control_data = reserved | (subtype << 32)
         full_value = control_data | (timestamp << 36) | (packet_type << 92)
 
-        return full_value.to_bytes(12, byteorder="little")
+        return full_value.to_bytes(12, byteorder="big")
 
 
 @dataclass
 class SimulatorConfig:
     """Configuration for the packet simulator"""
 
-    pixel_count_rate: float = 1000.0  # Average counts per second
+    pixel_count_rate: float = 1000  # Average counts per second
     tdc_frequency: float = 0.1  # TDC pulses per second (e.g., 0.1 Hz = every 10s)
     tdc_channel: int = 1  # Which TDC channel to use
     tdc_pulse_width_ns: float = 100.0  # Width of TDC pulse in nanoseconds
@@ -172,7 +172,7 @@ class PacketSimulator:
         """Get current timestamp based on elapsed real time"""
         elapsed_time = time.time() - self.start_real_time
         elapsed_ticks = int(elapsed_time * TIMESTAMP_CLOCK_MHZ * 1_000_000)
-        # add modulo 56 bits to ensure wrap-around
+        # add modulo 56 bits to ensure wrap-around/ avoid overflow
         return (self.start_timestamp + elapsed_ticks) % (1 << 56)
 
     def generate_pixel_event(self) -> bytes:

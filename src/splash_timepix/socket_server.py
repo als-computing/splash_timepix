@@ -9,6 +9,7 @@ This data can be used for downstream UI and data analysis applications.
 
 import logging
 import queue
+from collections import deque
 import socket
 import struct
 import threading
@@ -20,11 +21,32 @@ from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.parser import PacketParser, PacketType, PixelPacket, TDCPacket, ControlPacket
 
 
-# Configure logging
+# Configure logging -> to console
+#                   -> to ring buffer displaying last N errors
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+class RingBufferHandler(logging.Handler):
+    """Logging handler that keeps only the last N log records in a ring buffer."""
+    
+    def __init__(self, capacity=10):
+        super().__init__()
+        self.buffer = deque(maxlen=capacity)
+    
+    def emit(self, record):
+        # Format and store the log message
+        msg = self.format(record)
+        self.buffer.append(msg)
+    
+    def get_logs(self):
+        """Return all logs in the buffer as a list."""
+        return list(self.buffer)
+    
+    def clear(self):
+        """Clear the buffer."""
+        self.buffer.clear()
 
 
 class SocketDataServer:
@@ -34,7 +56,7 @@ class SocketDataServer:
     """
 
     def __init__(
-        self, host: str = "localhost", port: int = 8888, buffer_size: int = 1000
+        self, host: str = "localhost", port: int = 9090, buffer_size: int = 1000
     ):
         """
         Initialize the socket server.
@@ -61,6 +83,10 @@ class SocketDataServer:
 
         # Parser instance
         self.parser = PacketParser()
+        
+        # Debugging
+        self.unknown_packet_count = 0 # count instances of unknown packet type
+        self.valid_packet_buffer = deque(maxlen=10)  # Keep last 10 valid packets
 
         # Detector size from simulator config
         self.detector_size_x = SimulatorConfig.detector_size_x
@@ -97,9 +123,7 @@ class SocketDataServer:
         self.socket_thread.start()
 
         # Start the data processor thread
-        self.processor_thread = threading.Thread(
-            target=self._data_processor, daemon=True
-        )
+        self.processor_thread = threading.Thread(target=self._data_processor, daemon=True)
         self.processor_thread.start()
 
         logger.info(f"Server started on {self.host}:{self.port}")
@@ -202,6 +226,8 @@ class SocketDataServer:
                 message = self.message_queue.get(timeout=1.0)
                 # Parse the packet directly
                 packet = self.parser.parse(message)
+
+
                 if isinstance(packet, PixelPacket):
                     x, y = packet.x, packet.y
                     if 0 <= x < self.detector_size_x and 0 <= y < self.detector_size_y:
@@ -209,17 +235,21 @@ class SocketDataServer:
                             self.data_array[x, y] += 1
                         if self.data_callback: # Call the callback if set
                             self.data_callback(np.array([[x, y]]))
+                    # Store in debug buffer
+                    self.valid_packet_buffer.append(f"Pixel: x={x}, y={y}, raw={message.hex()}")
                     logger.debug(f"Processed pixel: ({x}, {y})")
-
+                    
                 elif isinstance(packet, TDCPacket):
-                    #$% Add TDC packet processing 
                     logger.info(f"Received TDC packet: {packet}")
-
+                    self.valid_packet_buffer.append(f"TDC: {packet}, raw={message.hex()}")
+                    
                 elif isinstance(packet, ControlPacket):
                     logger.info(f"Received control packet: {packet}")
+                    self.valid_packet_buffer.append(f"Control: {packet}, raw={message.hex()}")
 
-                else:
-                    logger.warning(f"Unknown packet type: {type(packet)}")
+                else: # print warning with the raw packet data (hex)
+                    logger.warning(f"Unknown packet type: {type(packet)}, raw data: {message.hex()}")
+                    self.unknown_packet_count += 1
 
                 # Mark task as done
                 self.message_queue.task_done()
@@ -253,6 +283,16 @@ class SocketDataServer:
     def get_queue_size(self) -> int:
         """Get the current size of the message queue."""
         return self.message_queue.qsize()
+    
+
+    def get_unknown_packet_count(self) -> int:
+        """Get the count of unknown packet types received."""
+        return self.unknown_packet_count
+
+
+    def get_valid_packet_samples(self) -> list:
+        """Get samples of recently received valid packets."""
+        return list(self.valid_packet_buffer)
 
 
 def main():
@@ -260,7 +300,7 @@ def main():
     Example usage of the SocketDataServer.
     """
     # Create server
-    server = SocketDataServer(host="localhost", port=8888, buffer_size=1000)
+    server = SocketDataServer(host="localhost", port=9090, buffer_size=1000)
 
     # Set up a callback to print new data
     def data_callback(new_data):
@@ -281,7 +321,6 @@ def main():
                 data = server.get_data_array()
                 queue_size = server.get_queue_size()
                 print(f"Total counts (pixel events): {np.sum(data)}, Queue size: {queue_size}")
-                #$% plot image data here?
 
 
     except KeyboardInterrupt:

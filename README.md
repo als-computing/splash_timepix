@@ -26,16 +26,31 @@ pip install -e .[dev]
 
 ## Running as a Developer
 
-- **Run the example server:**
+- **Run the server that will consume incoming TCP packets:**
 
+	For any high count rates
 	```bash
 	python -m splash_timepix.example
 	```
+	For low count rates (using the test_source)
+	This will print a line for every incoming event)
+	```bash
+	python -m splash_timepix.example --verbose
+	```
 
-- **Run the test source (in another terminal):**
-
+- **Run the client that streams data (in another terminal):**
+	
+	Use the test source
 	```bash
 	python -m splash_timepix.test_source
+	```
+	Replay a previously recorded TimePix file
+	```bash
+	./ASI/live-cli_alpha-1/live-cli --source-files path/to/file.tpx3
+	```
+	Stream data from TimePix in real time
+	```bash
+	./ASI/live-cli_alpha-1/live-cli
 	```
 
 - **Run all tests:**
