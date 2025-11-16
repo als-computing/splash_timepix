@@ -1,7 +1,7 @@
 """
 Test source for the SocketDataServer.
 
-This script creates a source that connects to the server and sends 5-byte messages
+This script creates a source that connects to the server and sends simulated messages
 to test the socket server functionality.
 """
 
@@ -20,7 +20,7 @@ import typer
 app = typer.Typer()
 
 
-class TestSource:
+class Tpx3TestSource:
     """A test source (i.e. TimePix3 simlulator) that sends 12-byte messages to the socket server."""
 
     def __init__(self, host: str = "localhost", port: int = 9090):
@@ -161,7 +161,7 @@ def main():
     
     print("Start sending simulated TimePix3 data to Socket Server")
 
-    source = TestSource()
+    source = Tpx3TestSource()
 
     if not source.connect():
         return
