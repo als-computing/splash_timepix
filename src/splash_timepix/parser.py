@@ -129,11 +129,10 @@ class PacketParser:
 
         # Convert 12 bytes directly to a 96-bit integer
         full_value = int.from_bytes(data, byteorder="big")
-        #full_value = int.from_bytes(data, byteorder="little")
 
         # Extract common fields
         packet_type = (full_value >> 92) & 0xF  # bits 92-95
-        timestamp = (full_value >> 36) & 0xFFFFFFFFFFFFF  # bits 36-91 (56 bits)
+        timestamp = (full_value >> 36) & 0xFFFFFFFFFFFFFF  # bits 36-91 (56 bits)
         packet_specific = full_value & 0xFFFFFFFFF  # bits 0-35 (36 bits)
 
         if packet_type == PacketType.PIXEL:
@@ -253,8 +252,8 @@ if __name__ == "__main__":
     # Build full 96-bit value
     full_value = pixel_data | (timestamp << 36) | (packet_type << 92)
 
-    # Convert to bytes (little-endian)
-    packet_bytes = full_value.to_bytes(12, byteorder="little")
+    # Convert to bytes (big-endian)
+    packet_bytes = full_value.to_bytes(12, byteorder="big")
 
     # Parse the packet
     packet = parser.parse(packet_bytes)

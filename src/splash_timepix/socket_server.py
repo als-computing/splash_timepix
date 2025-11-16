@@ -17,7 +17,6 @@ import time
 from typing import Callable, Optional
 import numpy as np
 
-from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.parser import PacketParser, PacketType, PixelPacket, TDCPacket, ControlPacket
 
 
@@ -54,9 +53,9 @@ class SocketDataServer:
     A multi-threaded server that reads 12-byte TimePix3 messages from a socket,
     and averages all pixel events into one 2D image (numpy array) for now.
     """
-
     def __init__(
-        self, host: str = "localhost", port: int = 9090, buffer_size: int = 1000
+        self, host: str = "localhost", port: int = 9090, buffer_size: int = 1000, 
+        debug: bool = False, callback_batch_size: int = 1000
     ):
         """
         Initialize the socket server.
@@ -85,19 +84,19 @@ class SocketDataServer:
         self.parser = PacketParser()
         
         # Debugging
-        self.unknown_packet_count = 0 # count instances of unknown packet type
-        self.valid_packet_buffer = deque(maxlen=10)  # Keep last 10 valid packets
-
-        # Detector size from simulator config
-        self.detector_size_x = SimulatorConfig.detector_size_x
-        self.detector_size_y = SimulatorConfig.detector_size_y
-
-        # Storage for processed data
-        self.data_array = np.zeros((self.detector_size_x, self.detector_size_y), dtype=np.uint32)
-        self.data_lock = threading.Lock()
+        self.debug = debug
+        self.unknown_packet_count = 0  # count instances of unknown packet type
+        if self.debug:
+            self.valid_packet_buffer = deque(maxlen=10)  # Keep last 10 valid packets
+        else:
+            self.valid_packet_buffer = None
 
         # Callback for when new data is processed
         self.data_callback: Optional[Callable[[np.ndarray], None]] = None
+
+        # Callback batching
+        self.callback_batch_size = callback_batch_size
+        self.callback_buffer = []
 
 
     def set_data_callback(self, callback: Callable[[np.ndarray], None]) -> None:
@@ -184,6 +183,7 @@ class SocketDataServer:
             if self.server_socket:
                 self.server_socket.close()
 
+
     def _handle_client(self, client_socket: socket.socket) -> None:
         """
         Handle a single client connection, reading messages.
@@ -227,27 +227,42 @@ class SocketDataServer:
                 # Parse the packet directly
                 packet = self.parser.parse(message)
 
-
+                # Add Pixel/ TDC/ Control packets to callback buffer in batches
                 if isinstance(packet, PixelPacket):
-                    x, y = packet.x, packet.y
-                    if 0 <= x < self.detector_size_x and 0 <= y < self.detector_size_y:
-                        with self.data_lock: # Add to numpy array (thread-safe)
-                            self.data_array[x, y] += 1
-                        if self.data_callback: # Call the callback if set
-                            self.data_callback(np.array([[x, y]]))
-                    # Store in debug buffer
-                    self.valid_packet_buffer.append(f"Pixel: x={x}, y={y}, raw={message.hex()}")
-                    logger.debug(f"Processed pixel: ({x}, {y})")
+                    if self.data_callback:
+                        self.callback_buffer.append(packet)
+                        if len(self.callback_buffer) >= self.callback_batch_size:
+                            self.data_callback(self.callback_buffer[:])
+                            self.callback_buffer.clear()
+                    
+                    if self.debug:
+                        logger.debug(f"Received Pixel packet: x={packet.x}, y={packet.y}")
+                        if self.valid_packet_buffer is not None:
+                            self.valid_packet_buffer.append(f"Pixel: x={packet.x}, y={packet.y}, raw={message.hex()}")
                     
                 elif isinstance(packet, TDCPacket):
-                    logger.info(f"Received TDC packet: {packet}")
-                    self.valid_packet_buffer.append(f"TDC: {packet}, raw={message.hex()}")
+                    if self.data_callback:
+                        self.callback_buffer.append(packet)
+                        if len(self.callback_buffer) >= self.callback_batch_size:
+                            self.data_callback(self.callback_buffer[:])
+                            self.callback_buffer.clear()
+                    if self.debug:
+                        logger.debug(f"Received TDC packet: {packet}")
+                        if self.valid_packet_buffer is not None:
+                            self.valid_packet_buffer.append(f"TDC: ch={packet.channel}, edge={packet.edge}, raw={message.hex()}")
                     
                 elif isinstance(packet, ControlPacket):
-                    logger.info(f"Received control packet: {packet}")
-                    self.valid_packet_buffer.append(f"Control: {packet}, raw={message.hex()}")
+                    if self.data_callback:
+                        self.callback_buffer.append(packet)
+                        if len(self.callback_buffer) >= self.callback_batch_size:
+                            self.data_callback(self.callback_buffer[:])
+                            self.callback_buffer.clear()
+                    if self.debug:
+                        logger.debug(f"Received Control packet: {packet}")
+                        if self.valid_packet_buffer is not None:
+                            self.valid_packet_buffer.append(f"Control: {packet}, raw={message.hex()}")
 
-                else: # print warning with the raw packet data (hex)
+                else:
                     logger.warning(f"Unknown packet type: {type(packet)}, raw data: {message.hex()}")
                     self.unknown_packet_count += 1
 
@@ -255,34 +270,30 @@ class SocketDataServer:
                 self.message_queue.task_done()
 
             except queue.Empty:
-                # Timeout occurred, continue loop to check if we should still be running
+                # Timeout occurred, flush any pending callbacks during idle
+                if self.data_callback and self.callback_buffer:
+                    self.data_callback(self.callback_buffer[:])
+                    self.callback_buffer.clear()
                 continue
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
 
+        # Flush any remaining buffered callbacks before exit
+        if self.data_callback and self.callback_buffer:
+            self.data_callback(self.callback_buffer[:])
+            self.callback_buffer.clear()
+        
         logger.info("Data processor thread finished")
-
-
-    def get_data_array(self) -> np.ndarray:
-        """
-        Get a copy of the current data array.
-
-        Returns:
-            A copy of the numpy array containing all processed data
-        """
-        with self.data_lock:
-            return self.data_array.copy()
-
-
-    def clear_data_array(self) -> None:
-        """Clear the data array."""
-        with self.data_lock:
-            self.data_array = np.array([], dtype=np.int32)
 
 
     def get_queue_size(self) -> int:
         """Get the current size of the message queue."""
         return self.message_queue.qsize()
+    
+
+    def get_callback_buffer_size(self) -> int:
+        """Get the current size of the callback buffer."""
+        return len(self.callback_buffer)
     
 
     def get_unknown_packet_count(self) -> int:
@@ -292,7 +303,9 @@ class SocketDataServer:
 
     def get_valid_packet_samples(self) -> list:
         """Get samples of recently received valid packets."""
-        return list(self.valid_packet_buffer)
+        if self.valid_packet_buffer is not None:
+            return list(self.valid_packet_buffer)
+        return []
 
 
 def main():

@@ -36,7 +36,7 @@ def run_source():
 
 def run_server():
     """Run the server in a subprocess."""
-    server_cmd = [str(VENV_PYTHON), "-m", "splash_timepix.example"]
+    server_cmd = [str(VENV_PYTHON), "-m", "splash_timepix.app"]
     print("🚀 Starting server...")
     server_process = subprocess.Popen(
         server_cmd,
