@@ -56,7 +56,7 @@ See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for details.
 Main application implementing time-resolved binning:
 - Receives packets via callback from socket server
 - Bins pixel events into 3D arrays (x, y, time) based on TDC triggers
-- Flushes accumulated arrays to processing queue
+- Flushes accumulated 3D arrays to processing queue
 - Provides statistics display and user commands
 
 ### 3. Worker Threads
