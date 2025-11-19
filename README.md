@@ -1,6 +1,6 @@
 # splash_timepix
 
-Time-resolved TimePix3 detector data streaming and pre-processing system.
+Streaming and pre-processing time-resolved TimePix3 detector data
 
 ## Overview
 
@@ -129,17 +129,17 @@ splash_timepix --verbose
 
 **Terminal 2**
 ```bash
-# Low Count Rates (Simulator)
+# (I) Low Count Rates (Simulator)
 python -m splash_timepix.simulator_cli
 cps 3
 tdc 1
 start 60
-# High Count Rates [<100kcps] (Simulator)
+# OR (II) High Count Rates [<100kcps] (Simulator)
 python -m splash_timepix.simulator_cli
 cps 100000
 tdc 0.1
 start 60
-# Using Replay From File (live-cli)
+# OR (III) Using Replay From File (live-cli)
 ./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
 ```
 
@@ -200,6 +200,9 @@ Published arrays use a **multi-part message** format:
 - Reconstruct with `np.frombuffer(bytes, dtype).reshape(shape)`
 
 ### Example Subscriber
+
+**See also `example_zmq_sub.py`**
+
 ```python
 import zmq
 import msgpack
