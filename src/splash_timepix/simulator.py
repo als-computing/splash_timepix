@@ -8,7 +8,6 @@ import random
 import time
 from dataclasses import dataclass
 from typing import Generator, List, Optional
-
 import numpy as np
 
 # Constants from the parser
@@ -62,7 +61,7 @@ class PacketBuilder:
         pixel_data = reserved | (y << 6) | (x << 16) | (tot << 26)
         full_value = pixel_data | (timestamp << 36) | (packet_type << 92)
 
-        return full_value.to_bytes(12, byteorder="little")
+        return full_value.to_bytes(12, byteorder="big")
 
     @staticmethod
     def build_tdc_packet(
@@ -89,7 +88,7 @@ class PacketBuilder:
         tdc_data = reserved | (edge << 29) | (channel << 30)
         full_value = tdc_data | (timestamp << 36) | (packet_type << 92)
 
-        return full_value.to_bytes(12, byteorder="little")
+        return full_value.to_bytes(12, byteorder="big")
 
     @staticmethod
     def build_control_packet(timestamp: int, subtype: int, reserved: int = 0) -> bytes:
@@ -112,22 +111,22 @@ class PacketBuilder:
         control_data = reserved | (subtype << 32)
         full_value = control_data | (timestamp << 36) | (packet_type << 92)
 
-        return full_value.to_bytes(12, byteorder="little")
+        return full_value.to_bytes(12, byteorder="big")
 
 
 @dataclass
 class SimulatorConfig:
     """Configuration for the packet simulator"""
 
-    pixel_count_rate: float = 1000.0  # Average pixels per second
+    pixel_count_rate: float = 1000  # Average counts per second
     tdc_frequency: float = 0.1  # TDC pulses per second (e.g., 0.1 Hz = every 10s)
     tdc_channel: int = 1  # Which TDC channel to use
     tdc_pulse_width_ns: float = 100.0  # Width of TDC pulse in nanoseconds
     tot_mean: float = 100.0  # Mean time-over-threshold value
     tot_sigma: float = 20.0  # Standard deviation for ToT
-    detector_size_x: int = 1024  # Detector width
-    detector_size_y: int = 1024  # Detector height
-    include_control_packets: bool = True  # Whether to generate control packets
+    detector_size_x: int = 256  # Detector width
+    detector_size_y: int = 256  # Detector height
+    include_control_packets: bool = False  # Whether to generate control packets
     control_packet_interval: float = 1.0  # Seconds between control sequences
 
 
@@ -172,7 +171,8 @@ class PacketSimulator:
         """Get current timestamp based on elapsed real time"""
         elapsed_time = time.time() - self.start_real_time
         elapsed_ticks = int(elapsed_time * TIMESTAMP_CLOCK_MHZ * 1_000_000)
-        return self.start_timestamp + elapsed_ticks
+        # add modulo 56 bits to ensure wrap-around/ avoid overflow
+        return (self.start_timestamp + elapsed_ticks) % (1 << 56)
 
     def generate_pixel_event(self) -> bytes:
         """Generate a single pixel event with random position and ToT"""
@@ -225,15 +225,22 @@ class PacketSimulator:
     def generate_stream(self, duration_seconds: float) -> Generator[bytes, None, None]:
         """
         Generate a mixed stream of packets over time.
-
+        
         Pixels follow Poisson distribution based on count rate.
         TDC pulses occur at fixed frequency.
-
+        
         Args:
-            duration_seconds: How long to generate packets
-
+            duration_seconds: How long to generate packets for
+        
         Yields:
             Packet bytes in chronological order
+            
+        Note:
+            Due to timing differences between real-time scheduling and detector
+            timestamps, some pixels may be generated with timestamps that fall
+            outside expected TDC cycle boundaries. This is realistic behavior
+            that mimics actual detector timing jitter. The application's binning
+            logic will correctly discard these out-of-window events.
         """
         start_time = time.time()
 
