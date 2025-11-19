@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Simple ZMQ subscriber to receive and display published arrays.
+Modify this example to build applications receiving pre-processed TimePix3 data.
 """
 
 import zmq
 import msgpack
 import numpy as np
-import time
 
 def main():
     # Create ZMQ context and SUB socket
@@ -14,12 +14,12 @@ def main():
     socket = context.socket(zmq.SUB)
     
     # Connect to publisher
-    socket.connect("tcp://localhost:5555")
+    socket.connect("tcp://localhost:5657")
     
     # Subscribe to all messages (empty filter = receive everything)
     socket.setsockopt(zmq.SUBSCRIBE, b"")
     
-    print("📡 Subscriber connected to tcp://localhost:5555")
+    print("📡 Subscriber connected to tcp://localhost:5657")
     print("Waiting for arrays...\n")
     
     array_count = 0

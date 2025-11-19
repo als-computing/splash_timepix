@@ -13,9 +13,6 @@ import math
 import numpy as np
 import threading
 import queue
-import cv2
-import zmq
-import msgpack
 
 from splash_timepix.socket_server import SocketDataServer, RingBufferHandler
 from splash_timepix.parser import PixelPacket, TDCPacket, TDCEdge
@@ -34,38 +31,49 @@ logger = logging.getLogger(__name__)
 
 
 @app.command()
-def main(port: int = 9090,
+def main(host: str = "localhost",
+         port: int = 9090,
          buffer_size: int = 1000,
          callback_batch_size: int = 10000,
          stats_update_time: int = 2,
          plot: bool = False,
          verbose: bool = False,
-         zmq_port: int = 5555,
-         tdc_ch: int = 2,
+         zmq_port: int = 5657,
+         tdc_ch: int = 1,
          tdc_edge: str = "rising",
-         tdc_frequency: float = 1E4,
-         t_delta_ns: float = 1E1,
-         flush_interval: float = 2.0):
+         tdc_frequency: float = 1E0,
+         t_delta_ns: float = 1E6,
+         flush_interval: float = 1.0):
     """
     Time-resolved TimePix3 data streaming server.
 
     Args:
-        port: Port number for the server
-        buffer_size: Size of the internal data buffer
-        callback_batch_size: Number of packets to send per callback
-        stats_update_time: Time interval (seconds) to update and display stats
-        plot: Use plotting worker (vs ZMQ publishing)
-        verbose: Show detailed logs, packet samples, and error history
-        zmq_port: Port number for ZMQ PUB socket (default: 5555)
+        host: Host address for the server to bind to (default: "localhost")
+        port: Port number for the server to bind to (default: 9090)
+        buffer_size: Size of the internal data buffer (default: 1000)
+        callback_batch_size: Number of packets to send per callback (default: 10000)
+        stats_update_time: Time between stats updates in seconds (default: 2)
+        plot: Use plotting worker (vs ZMQ publishing [default]) (default: False)
+        verbose: Show detailed logs, packet samples, and error history (default: False)
+        zmq_port: Port number for ZMQ PUB socket (default: 5657)
         tdc_ch: TDC channel to use (0=both, 1=channel 1, 2=channel 2)
-        tdc_edge: TDC edge to trigger on ("rising" or "falling")
+        tdc_edge: TDC edge to trigger on ("rising"[default] or "falling")
         tdc_frequency: Expected TDC trigger frequency in Hz
         t_delta_ns: Time bin width in nanoseconds
-        flush_interval: Time between array flushes in seconds
+        flush_interval: Time between array flushes in seconds (default: 1)
     """
-
-    print("Starting Socket Data Server Example")
+    os.system('cls' if os.name == 'nt' else 'clear')
+    print("Starting TimPix3 Streaming Application")
     print("=" * 50)
+    print()
+
+    # Calculate derived parameters from user-friendly inputs
+    t_cycle = (1.0 / tdc_frequency) * 1e12  # seconds → picoseconds
+    t_delta = t_delta_ns * 1e3  # nanoseconds → picoseconds
+    # Setup time-resolved binning
+    t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
+    t_cycle_ticks = t_cycle / TIMESTAMP_PS_PER_TICK
+    n_bins = math.ceil(t_cycle_ticks / t_delta_ticks)
 
     # Set logging level based on verbose flag
     if verbose:
@@ -87,51 +95,12 @@ def main(port: int = 9090,
 
     # Create the server
     server = SocketDataServer(
-        host="localhost", 
+        host=host, 
         port=port, 
         buffer_size=buffer_size, 
         debug=verbose,  # verbose enables packet buffer
         callback_batch_size=callback_batch_size
     )
-
-    # Calculate derived parameters from user-friendly inputs
-    # Convert TDC frequency to time cycle
-    t_cycle = (1.0 / tdc_frequency) * 1e12  # seconds → picoseconds
-    t_delta = t_delta_ns * 1e3  # nanoseconds → picoseconds
-    
-    # Calculate flush cycles from interval and frequency
-    flush_every_n_cycles = max(1, int(flush_interval * tdc_frequency))
-    
-    # Errors and warnings
-    if tdc_frequency < 0.1:
-        logger.error(f"❌ Low TDC frequency ({tdc_frequency} Hz) → detector may miss TDC events")
-        return
-    if flush_interval < (1.0 / tdc_frequency):
-        logger.warning(f"⚠️  Flush interval ({flush_interval}s) < TDC period ({1.0/tdc_frequency:.2f}s)")
-        logger.warning(f"   Will flush every TDC cycle (flush_every_n_cycles = 1)")
-    
-    # Setup time-resolved binning
-    t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
-    t_cycle_ticks = t_cycle / TIMESTAMP_PS_PER_TICK
-    n_bins = math.ceil(t_cycle_ticks / t_delta_ticks)
-
-    # Memory check
-    array_size_gb = (256 * 256 * n_bins * 4) / 1e9  # uint32
-
-    if array_size_gb > 1.0:
-        suggested_bins = int(n_bins * 1.0 / array_size_gb)
-        suggested_t_delta_ns = t_delta_ns * (n_bins / suggested_bins)
-        logger.warning(f"⚠️  Large array: {array_size_gb:.2f} GB")
-        logger.warning(f"💡 Suggestion: use --t-delta-ns {suggested_t_delta_ns:.1f} to reduce to ~1 GB")
-    elif array_size_gb > 5.0:
-        logger.error(f"❌ Array too large ({array_size_gb:.2f} GB)! Increase t_delta_ns or decrease TDC frequency")
-        return
-    
-    # Log final configuration
-    logger.info(f"📊 TDC: {tdc_frequency} Hz → t_cycle = {t_cycle:.3e} ps ({t_cycle/1e12:.3f} s)")
-    logger.info(f"⏱️  Time bins: {n_bins} bins × {t_delta_ns} ns = {t_cycle/1e12:.3f} s total")
-    logger.info(f"💾 Array size: {array_size_gb:.3f} GB per flush")
-    logger.info(f"🔄 Flush: every {flush_every_n_cycles} cycles ({flush_interval} s)")
 
     # Create stop event for input_listener
     stop_event = threading.Event()
@@ -155,12 +124,41 @@ def main(port: int = 9090,
     )
     worker_thread.start()
 
-    # Pre-allocate x, y, t accumulator array
+    # Define x, y, t accumulator array
     config = SimulatorConfig()
     detector_size_x = config.detector_size_x
     detector_size_y = config.detector_size_y
     xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
     xyt_lock = threading.Lock()
+    
+    # Calculate flush cycles from interval and frequency
+    flush_every_n_cycles = max(1, int(flush_interval * tdc_frequency))
+    
+    # Errors and warnings
+    if tdc_frequency < 0.1:
+        logger.error(f"❌ Low TDC frequency ({tdc_frequency} Hz) → detector may miss TDC events")
+        return
+    if flush_interval < (1.0 / tdc_frequency):
+        logger.warning(f"⚠️  Flush interval ({flush_interval}s) < TDC period ({1.0/tdc_frequency:.2f}s)")
+        logger.warning(f"   Will flush every TDC cycle (flush_every_n_cycles = 1)")
+
+    # Memory check
+    array_size_gb = xyt_array.nbytes / (1024**3)
+
+    if array_size_gb > 1.0:
+        suggested_bins = int(n_bins * 1.0 / array_size_gb)
+        suggested_t_delta_ns = t_delta_ns * (n_bins / suggested_bins)
+        logger.warning(f"⚠️  Large array: {array_size_gb:.2f} GB")
+        logger.warning(f"💡 Suggestion: use --t-delta-ns {suggested_t_delta_ns:.1f} to reduce to ~1 GB")
+    elif array_size_gb > 5.0:
+        logger.error(f"❌ Array too large ({array_size_gb:.2f} GB)! Increase t_delta_ns or decrease TDC frequency")
+        return
+    
+    # Log final configuration
+    logger.info(f"📊 TDC: {tdc_frequency} Hz → t_cycle = {t_cycle:.3e} ps ({t_cycle/1e12:.3f} s)")
+    logger.info(f"⏱️  Time bins: {n_bins} bins × {t_delta_ns} ns = {t_cycle/1e12:.3f} s total")
+    logger.info(f"💾 Array size: {array_size_gb:.3f} GB per flush")
+    logger.info(f"🔄 Flush: every {flush_every_n_cycles} cycles ({flush_interval} s)")
     
     # Monitor memory usage of the server
     process = psutil.Process(os.getpid())
@@ -267,7 +265,7 @@ def main(port: int = 9090,
 
         # Wait so the console can be read
         wait_after_start = 1
-        print(f"⏱️ Waiting for {wait_after_start} seconds...")
+        print(f"\n⏱️  Waiting for {wait_after_start} seconds...")
         time.sleep(wait_after_start)
 
         # Keep the main thread alive and show overall stats
@@ -315,16 +313,13 @@ def main(port: int = 9090,
                 
                 # Check for timing print command
                 if print_event.is_set():
-                    print(f"⚙️  Time-resolved mode configuration:")
-                    print(f"   TDC channel: {tdc_ch} ({'both' if tdc_ch == 0 else f'ch{tdc_ch}'})")
-                    print(f"   TDC edge: {tdc_edge}")
-                    print(f"   TDC frequency: {tdc_frequency:.3e} Hz")
-                    print(f"   Time window: {t_cycle/1e12:.3e} s")
-                    print(f"   Time bin width: {t_delta/1E12:.3e} s")
-                    print(f"   Number of time bins: {n_bins:.3e}")
-                    print(f"   Array size: {array_size_gb:.3f} GB")
-                    print(f"   Flush interval: {flush_interval} s (every {flush_every_n_cycles:.3e} cycles)")
-                    time.sleep(5)
+                    print(f"📻 TDC channel: {tdc_ch} ({'both' if tdc_ch == 0 else f'ch{tdc_ch}'}) (edge: {tdc_edge})")
+                    print(f"〰 TDC frequency: {tdc_frequency:.3e} Hz (time cycle: {t_cycle/1e12:.3e} s)")
+                    print(f"↔️  Time bin width: {t_delta/1E12:.3e} s (# of bins: {n_bins:.3e})")
+                    print(f"📼 3D array (x,y,t): {array_size_gb:.3f} GB [{xyt_array.shape}]")
+                    print(f"                     (flushed every {flush_interval} s ({flush_every_n_cycles:.3e} cycles)")
+                    print()
+                    input("Press ENTER to continue...")
                     print_event.clear()
 
                 # Set session start time when first packet arrives after reset
@@ -347,13 +342,11 @@ def main(port: int = 9090,
                 
                 info = (
                     f"🛑 Press Ctrl+C to stop the server\n"
-                    f"💡 Type 'r' to reset session stats\n"
-                    f"🖨️  Type 'p' to print timing settings\n"
+                    f"🔄 Type 'r' to reset session stats\n"
+                    f"⚙️  Type 'p' to print timing settings\n"
                 )
                 
                 # Get stats
-                array_memory_gb = xyt_array.nbytes / (1024**3)
-                array_memory_str = f"{array_memory_gb:.3f} GB [{xyt_array.shape}]"
                 xyt_queue_size = xyt_queue.qsize()
                 xyt_queue_max = xyt_queue.maxsize
                 xyt_queue_str = f"{xyt_queue_size} / {xyt_queue_max}"
@@ -361,7 +354,6 @@ def main(port: int = 9090,
                 stats = (
                     f"⏱️  Server uptime: {uptime:.0f}s\n"
                     f"💾 Server memory: {current_mem:.3f} GB\n"
-                    f"💿 Single x,y,t array: {array_memory_str}\n"
                     f"📊 Total packets: {current_total_data_points:.3e}\n"
                     f"📈 Overall rate: {rate_str} packets/s\n"
                     f"⚠️  Unknown packets: {unknown_count}\n"

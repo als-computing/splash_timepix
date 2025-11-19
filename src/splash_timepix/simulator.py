@@ -8,7 +8,6 @@ import random
 import time
 from dataclasses import dataclass
 from typing import Generator, List, Optional
-
 import numpy as np
 
 # Constants from the parser
@@ -226,15 +225,22 @@ class PacketSimulator:
     def generate_stream(self, duration_seconds: float) -> Generator[bytes, None, None]:
         """
         Generate a mixed stream of packets over time.
-
+        
         Pixels follow Poisson distribution based on count rate.
         TDC pulses occur at fixed frequency.
-
+        
         Args:
             duration_seconds: How long to generate packets for
-
+        
         Yields:
             Packet bytes in chronological order
+            
+        Note:
+            Due to timing differences between real-time scheduling and detector
+            timestamps, some pixels may be generated with timestamps that fall
+            outside expected TDC cycle boundaries. This is realistic behavior
+            that mimics actual detector timing jitter. The application's binning
+            logic will correctly discard these out-of-window events.
         """
         start_time = time.time()
 
