@@ -56,7 +56,7 @@ See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for details.
 Main application implementing time-resolved binning:
 - Receives packets via callback from socket server
 - Bins pixel events into 3D arrays (x, y, time) based on TDC triggers
-- Flushes accumulated arrays to processing queue
+- Flushes accumulated 3D arrays to processing queue
 - Provides statistics display and user commands
 
 ### 3. Worker Threads
@@ -74,53 +74,73 @@ Two alternative workers for consuming 3D arrays:
 - Multi-part messages (metadata + array bytes)
 - Supports multiple subscribers
 
-### 4. Test Source (`test_source.py`)
+### 4. Simulated Source (`simulator_cli.py`)
 Simulated TimePix3 data source for testing:
 - Generates realistic packet streams
 - Configurable pixel count rate and TDC frequency
 - Interactive CLI for control
 
-## Quick Start
+## Quick Start - Basic Usage Examples
 
-### Basic Usage (ZMQ Publishing)
+### Production Mode (ZMQ Publishing)
 
-**Terminal 1** - Start server in production mode:
+**Terminal 1** - Start server:
 ```bash
+splash-timepix
+# OR via
 python -m splash_timepix.app
+```
+
+**Terminal 2** - Subscribe to published data:
+```bash
+# Use (or modify) the example
+python example_zmq_subscriber.py
+# OR connect with your application
+```
+
+**Terminal 3** - Start detector:
+```bash
+./ASI/live-cli_alpha-1/live-cli
+```
+
+### Display Real-time Data (Live Plotting)
+
+**Terminal 1** - Start server with visualization:
+```bash
+splash_timepix --plot
 ```
 
 **Terminal 2** - Start data source:
 ```bash
-# Using simulator
-python -m splash_timepix.test_source
-# Then type:
-cps 10000
-tdc 1.0
-start 120
-
-# OR using real detector
+# Using real detector
 ./ASI/live-cli_alpha-1/live-cli
+# OR replaying from file
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+# OR using the simulator
+python -m splash_timepix.simulator_cli
 ```
 
-**Terminal 3** - Subscribe to published data:
+### Development Mode (Debugging)
+
+**Terminal 1** - Start server with verbose output
 ```bash
-python test_zmq_subscriber.py
+splash_timepix --verbose
 ```
 
-### Development Mode (Live Plotting)
-
-**Terminal 1** - Start server with visualization and verbose output:
+**Terminal 2**
 ```bash
-python -m splash_timepix.app --plot --verbose
-```
-
-**Terminal 2** - Start simulator with low rate:
-```bash
-python -m splash_timepix.test_source
-# Then type:
-cps 1000
-tdc 0.5
-start 300
+# Low Count Rates (Simulator)
+python -m splash_timepix.simulator_cli
+cps 3
+tdc 1
+start 60
+# High Count Rates [<100kcps] (Simulator)
+python -m splash_timepix.simulator_cli
+cps 100000
+tdc 0.1
+start 60
+# Using Replay From File (live-cli)
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
 ```
 
 ## Command-Line Options
@@ -135,9 +155,11 @@ python -m splash_timepix.app [OPTIONS]
 - `--verbose`: Show detailed logs and packet samples (default: warnings only)
 
 **Server Options:**
+- `--host STR`: Host for server to bind to (default: "localhost")
 - `--port INT`: Socket server port matching live-cli client port (default: 9090)
 - `--buffer-size INT`: Internal message queue size (default: 1000)
-- `--zmq-port INT`: ZMQ publishing port (default: 5555)
+- `--callback-batch-size INT`: Number of parsed packets to batch per callback (default: 10000)
+- `--zmq-port INT`: ZMQ publishing port (default: 5657)
 
 **Time-Resolved Binning Options:**
 - `--tdc-ch INT`: TDC channel to use - 0=both, 1=ch1, 2=ch2 (default: 1)
@@ -149,63 +171,15 @@ python -m splash_timepix.app [OPTIONS]
 **Display Options:**
 - `--stats-update-time INT`: Stats refresh interval in seconds (default: 1)
 
-### `test_source.py` Interactive Commands
+### `simulator_cli.py` Interactive Commands
 
 After starting the test source, use these commands:
 
 - `cps <value>` - Set pixel count rate (events/second)
 - `tdc <value>` - Set TDC frequency (Hz)
 - `start <duration>` - Start streaming for duration (seconds)
+- `stop` - Stop streaming data
 - `quit` - Exit
-
-### Interactive Commands During Runtime
-
-While `app.py` is running:
-
-- Press **`r`** - Reset session statistics
-- Press **`p`** - Print current timing configuration
-- Press **Ctrl+C** - Shutdown server
-- Press **`q`** (in plot window) - Close visualization
-
-If you see Qt warnings after shutdown, press **ENTER** to clear them.
-
-## Usage Examples
-
-### Example 1: High-Rate Production with ZMQ
-```bash
-# Production settings for high count rates
-python -m splash_timepix.app \
-    --tdc-ch 1 \
-    --tdc-edge rising \
-    --tdc-frequency 1E6 \
-    --t-delta-ns 10
-```
-
-### Example 2: Low-Rate Development using "test_source"
-```bash
-# Terminal 1
-python -m splash_timepix.app --verbose
-
-# Terminal 2
-python -m splash_timepix.test_source
-```
-
-### Example 3: Custom Ports
-```bash
-# Non-default ports for incoming packets and outgoing x, y, t arrays 
-python -m splash_timepix.app \
-    --port 8080 \
-    --zmq-port 6666
-```
-
-### Example 4: Replay Recorded Data using Plotting (instead of ZMQ)
-```bash
-# Terminal 1
-python -m splash_timepix.app --plot
-
-# Terminal 2 - replay from file
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
-```
 
 ## ZMQ Data Format
 
@@ -233,7 +207,7 @@ import numpy as np
 
 context = zmq.Context()
 socket = context.socket(zmq.SUB)
-socket.connect("tcp://localhost:5555")
+socket.connect("tcp://localhost:5657")
 socket.setsockopt(zmq.SUBSCRIBE, b"")
 
 while True:
@@ -294,7 +268,7 @@ The application bins pixel events into 3D arrays based on TDC triggers:
 
 ## Data Sources
 
-### Simulator (`test_source.py`)
+### Simulator/ Test Source (`simulator_cli.py`)
 - Generates Poisson-distributed pixel events
 - Realistic TDC pulses with configurable frequency
 - Useful for testing and development
@@ -359,3 +333,14 @@ See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for server details.
 ### Qt warnings on shutdown
 - Press **ENTER** after Ctrl+C to clear buffered warnings
 - These are harmless and occur during daemon thread cleanup
+
+### Warnings about pixels outside time window
+When using the test simulator, you may see warnings like:
+```
+WARNING - Pixel outside time window: t_relative=... ps
+```
+This is **expected behavior**. The simulator uses real-time scheduling while packets
+use detector timestamps, which can drift slightly. These warnings indicate the
+application is correctly identifying and discarding events that fall outside the
+configured time window. In production with real detector hardware, similar edge
+cases may occur due to timing jitter, and the application handles them correctly.

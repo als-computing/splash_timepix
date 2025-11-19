@@ -1,11 +1,10 @@
 """
-Test source for the SocketDataServer.
+Simulated source for testing the SocketDataServer.
 
 This script creates a source that connects to the server and sends simulated messages
 to test the socket server functionality.
 """
 
-import random
 import socket
 import struct
 import threading
@@ -20,12 +19,12 @@ import typer
 app = typer.Typer()
 
 
-class Tpx3TestSource:
+class SimulatorSource:
     """A test source (i.e. TimePix3 simlulator) that sends 12-byte messages to the socket server."""
 
     def __init__(self, host: str = "localhost", port: int = 9090):
         """
-        Initialize the test source.
+        Initialize the simulator/ test source.
 
         Args:
             host: Server host address
@@ -38,6 +37,7 @@ class Tpx3TestSource:
         self.send_thread: Optional[threading.Thread] = None
         self.pixel_count_rate = 2
         self.tdc_frequency = 0.2
+        self.counting = True
 
 
     def set_counts_per_second(self, cps: float):
@@ -57,6 +57,15 @@ class Tpx3TestSource:
         """Frequency of time-to-digital converter (TDC) events (Hz)"""
         self.tdc_frequency = tdc
         print(f"TDC frequency set to {tdc} Hz")
+
+    
+    def set_counting(self, counting: bool):
+        """Count sent pixel (requires parsing -> slow down -> less performant)"""
+        self.counting = counting
+        if counting:
+            print(f"Counting sent packets (use to compare sent and received packets)")
+        else:
+            print(f"Not counting sent packets (allows for higher count rates [cps])")
 
 
     def connect(self) -> bool:
@@ -125,10 +134,11 @@ class Tpx3TestSource:
         # write count rate and TDC frequency to simulator configuration
         simulator.config.pixel_count_rate = self.pixel_count_rate
         simulator.config.tdc_frequency = self.tdc_frequency
-        # DEBUGGING
-        parser = PacketParser()
-        sent_count_pixel = 0
-        sent_count_tdc = 0
+        if self.counting:
+            parser = PacketParser()
+            sent_count_pixel = 0
+            sent_count_tdc = 0
+            sent_count_ctrl = 0
 
         packet_generator = simulator.generate_stream(duration_seconds=duration)
         for packet in packet_generator:
@@ -136,20 +146,25 @@ class Tpx3TestSource:
                 break
             try:
                 self.socket.sendall(packet)
-                #DEBUGGING
-                parsed = parser.parse(packet)
-                if parsed and parsed.packet_type == PacketType.PIXEL:
-                    sent_count_pixel += 1
-                elif parsed and parsed.packet_type == PacketType.TDC:
-                    sent_count_tdc += 1
-                # print(f"Sent simulated packet #{sent_count_pixel + sent_count_tdc}")
+                if self.counting:
+                    parsed = parser.parse(packet)
+                    if parsed and parsed.packet_type == PacketType.PIXEL:
+                        sent_count_pixel += 1
+                    elif parsed and parsed.packet_type == PacketType.TDC:
+                        sent_count_tdc += 1
+                    elif parsed and parsed.packet_type == PacketType.CONTROL:
+                        sent_count_ctrl += 1
             except Exception as e:
                 print(f"Failed to send simulated packet: {e}")
                 break
 
         self.running = False
         print("Auto-sending finished.")
-        print(f"Sent {sent_count_pixel} pixel events and {sent_count_tdc} TDC events.")
+        if self.counting:
+            print(f"Sent events during last session:")
+            print(f"  {sent_count_pixel} pixel events")
+            print(f"  {sent_count_tdc} TDC events")
+            print(f"  {sent_count_ctrl} control events")
         dt = datetime.datetime.fromtimestamp(time.time())
         formatted = dt.strftime('%Y-%m-%d %H:%M:%S.') + f"{dt.microsecond // 1000:03d}"
         print(f"Current time: {formatted}")
@@ -161,15 +176,17 @@ def main():
     
     print("Start sending simulated TimePix3 data to Socket Server")
 
-    source = Tpx3TestSource()
+    source = SimulatorSource()
 
     if not source.connect():
         return
 
     try:
-        print("Interactive source started. Commands:")
+        print("Interactive source started.")
+        print("Commands:")
         print("  'cps <value>' - Set counts per second")
         print("  'tdc <value>' - Set TDC frequency (Hz)")
+        print("  'count <y/n>' - Count sent packets (default: y)")
         print("  'start <duration_in_seconds>' - Start auto-sending")
         print("  'stop' - Stop auto-sending")
         print("  'quit' - Exit")
@@ -188,7 +205,6 @@ def main():
                     if len(command) < 2:
                         print("Usage: cps <value>")
                         continue
-
                     cps = float(command[1])
                     source.set_counts_per_second(cps)
 
@@ -196,17 +212,21 @@ def main():
                     if len(command) < 2:
                         print("Usage: tdc <value>")
                         continue
-
                     tdc = float(command[1])
                     source.set_tdc_frequency(tdc)
+
+                elif command[0] == "count":
+                    if len(command) < 2 or (command[1] not in ['y','n']):
+                        print("Usage: count <y/n>")
+                        continue
+                    counting = True if command[1] == 'y' else False
+                    source.set_counting(counting)
 
                 elif command[0] == "start":
                     if len(command) < 2:
                         print("Usage: start <duration>")
                         continue
-
                     duration = float(command[1])
-
                     source.start_auto_sending(duration)
 
                 elif command[0] == "stop":

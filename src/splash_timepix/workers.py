@@ -47,11 +47,11 @@ def input_listener(server, reset_event, print_event, stop_event):
                 if cmd == "r":
                     reset_event.set()
                     os.system('clear')
-                    print("🔄 Resetting session stats...")
+                    print("🧹 Resetting session stats...")
                 elif cmd == "p":
                     print_event.set()
                     os.system('clear')
-                    print("🖨️  Printing timing settings... (5s)\n")
+                    print("🖨️  Printing timing settings...\n")
         except EOFError:
             break
         except KeyboardInterrupt:
@@ -202,7 +202,7 @@ def plotting_worker(xyt_queue, stop_event):
         logger.info("Plotting worker thread finished")
 
 
-def zmq_worker(xyt_queue, stop_event, zmq_port=5555):
+def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
     """Worker thread that publishes accumulated 3D arrays via ZMQ PUB socket.
     
     Dequeues arrays of shape (x, y, t) from the processing queue and publishes
@@ -224,7 +224,7 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5555):
     Args:
         xyt_queue: Thread-safe queue containing 3D numpy arrays
         stop_event: Threading event to signal shutdown
-        zmq_port: Port number for ZMQ PUB socket (default: 5555)
+        zmq_port: Port number for ZMQ PUB socket (default: 5657)
         
     Note:
         Uses non-blocking sends (DONTWAIT) to avoid blocking on slow subscribers.
