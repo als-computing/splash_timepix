@@ -55,7 +55,8 @@ class SocketDataServer:
     """
     def __init__(
         self, host: str = "localhost", port: int = 9090, buffer_size: int = 1000, 
-        debug: bool = False, callback_batch_size: int = 1000
+        debug: bool = False, callback_batch_size: int = 1000,
+        exit_on_disconnect: bool = False
     ):
         """
         Initialize the socket server.
@@ -64,6 +65,9 @@ class SocketDataServer:
             host: The host address to bind to
             port: The port to bind to
             buffer_size: Maximum number of messages to buffer
+            debug: Enable debug logging and packet buffer
+            callback_batch_size: Number of packets to batch before callback
+            exit_on_disconnect: If True, stop server when client disconnects
         """
         self.host = host
         self.port = port
@@ -74,6 +78,10 @@ class SocketDataServer:
 
         # Control flags
         self.running = False
+        self.exit_on_disconnect = exit_on_disconnect
+        self.client_connected = False
+        self.client_disconnected_event = threading.Event()
+        
         self.socket_thread: Optional[threading.Thread] = None
         self.processor_thread: Optional[threading.Thread] = None
 
@@ -116,6 +124,7 @@ class SocketDataServer:
             return
 
         self.running = True
+        self.client_disconnected_event.clear()
 
         # Start the socket listener thread
         self.socket_thread = threading.Thread(target=self._socket_listener, daemon=True)
@@ -149,6 +158,19 @@ class SocketDataServer:
 
         logger.info("Server stopped")
 
+    
+    def wait_for_client_disconnect(self, timeout: Optional[float] = None) -> bool:
+        """
+        Block until a client disconnects (useful for exit_on_disconnect mode).
+        
+        Args:
+            timeout: Maximum time to wait in seconds, or None for indefinite
+            
+        Returns:
+            True if client disconnected, False if timeout occurred
+        """
+        return self.client_disconnected_event.wait(timeout=timeout)
+
 
     def _socket_listener(self) -> None:
         """
@@ -168,9 +190,19 @@ class SocketDataServer:
                     # Accept client connection
                     client_socket, client_address = self.server_socket.accept()
                     logger.info(f"Client connected from {client_address}")
+                    self.client_connected = True
 
                     # Handle this client in a separate method
                     self._handle_client(client_socket)
+                    
+                    # Client has disconnected
+                    self.client_connected = False
+                    self.client_disconnected_event.set()
+                    
+                    if self.exit_on_disconnect:
+                        logger.info("Client disconnected, shutting down (--exit-on-disconnect)")
+                        self.running = False
+                        break
 
                 except socket.error as e:
                     if self.running:  # Only log if we're still supposed to be running
@@ -343,3 +375,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

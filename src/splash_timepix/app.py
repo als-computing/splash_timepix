@@ -18,6 +18,7 @@ from splash_timepix.socket_server import SocketDataServer, RingBufferHandler
 from splash_timepix.parser import PixelPacket, TDCPacket, TDCEdge
 from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.workers import input_listener, plotting_worker, zmq_worker
+from splash_timepix.heartbeat import HeartbeatPublisher, ServerState
 
 import typer
 app = typer.Typer()
@@ -43,7 +44,9 @@ def main(host: str = "localhost",
          tdc_edge: str = "rising",
          tdc_frequency: float = 1E0,
          t_delta_ns: float = -1,
-         flush_interval: float = 5.0):
+         flush_interval: float = 5.0,
+         exit_on_disconnect: bool = False,
+         heartbeat_port: int = 5658):
     """
     Time-resolved TimePix3 data streaming server.
 
@@ -61,10 +64,16 @@ def main(host: str = "localhost",
         tdc_frequency: Expected TDC trigger frequency in Hz
         t_delta_ns: Time bin width in nanoseconds (defaults to auto-binning)
         flush_interval: Time between array flushes in seconds (default: 1)
+        exit_on_disconnect: Exit when client disconnects (for orchestrated runs)
+        heartbeat_port: Port for ZMQ heartbeat messages (default: 5658)
     """
     os.system('cls' if os.name == 'nt' else 'clear')
     print("Starting TimPix3 Streaming Application")
     print("=" * 50)
+    if exit_on_disconnect:
+        print("Mode: Exit on client disconnect (orchestrated)")
+    else:
+        print("Mode: Persistent (Ctrl+C to stop)")
     print()
 
     # Calculate binning and display parameters from user inputs
@@ -98,13 +107,23 @@ def main(host: str = "localhost",
     socket_logger = logging.getLogger('splash_timepix.socket_server')
     socket_logger.addHandler(ring_handler)
 
-    # Create the server
+    # Start heartbeat publisher
+    heartbeat = HeartbeatPublisher(
+        port=heartbeat_port,
+        data_port=zmq_port,
+        tcp_port=port,
+        interval=1.0
+    )
+    heartbeat.start()
+
+    # Create the server with exit_on_disconnect flag
     server = SocketDataServer(
         host=host, 
         port=port, 
         buffer_size=buffer_size, 
         debug=verbose,  # verbose enables packet buffer
-        callback_batch_size=callback_batch_size
+        callback_batch_size=callback_batch_size,
+        exit_on_disconnect=exit_on_disconnect
     )
 
     # Create stop event for input_listener
@@ -112,6 +131,29 @@ def main(host: str = "localhost",
 
     # Create processing queue
     xyt_queue = queue.Queue(maxsize=10)
+    
+    # Define x, y, t accumulator array
+    config = SimulatorConfig()
+    detector_size_x = config.detector_size_x
+    detector_size_y = config.detector_size_y
+    xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
+    xyt_lock = threading.Lock()
+    
+    # Build static metadata dict (parameters that don't change during run)
+    # Must be after SimulatorConfig to have detector_size_x/y
+    static_metadata = {
+        'tdc_frequency_hz': tdc_frequency,
+        't_delta_ns': t_delta_ns,
+        't_cycle_ns': t_cycle / 1e3,  # picoseconds → nanoseconds
+        'n_bins': n_bins,
+        'shape': (detector_size_x, detector_size_y, n_bins),
+        'dtype': 'uint32',
+        'flush_interval_s': flush_interval,
+        'cycles_per_flush': max(1, int(flush_interval * tdc_frequency)),
+        'tdc_channel': tdc_ch,
+        'tdc_edge': tdc_edge,
+    }
+    
     # Choose worker based on plot flag
     if plot:
         worker_function = plotting_worker
@@ -119,7 +161,7 @@ def main(host: str = "localhost",
         logger.info("🎨 Starting plotting worker")
     else:
         worker_function = zmq_worker
-        worker_args = (xyt_queue, stop_event, zmq_port)
+        worker_args = (xyt_queue, stop_event, zmq_port, static_metadata)
         logger.info("📡 Starting ZMQ worker")
     
     worker_thread = threading.Thread(
@@ -128,13 +170,6 @@ def main(host: str = "localhost",
         daemon=True
     )
     worker_thread.start()
-
-    # Define x, y, t accumulator array
-    config = SimulatorConfig()
-    detector_size_x = config.detector_size_x
-    detector_size_y = config.detector_size_y
-    xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
-    xyt_lock = threading.Lock()
     
     # Calculate flush cycles from interval and frequency
     flush_every_n_cycles = max(1, int(flush_interval * tdc_frequency))
@@ -176,6 +211,7 @@ def main(host: str = "localhost",
     # State variables
     t_zero = None
     cycle_count = 0
+    flush_count = 0
     pixels_before_trigger = 0
     pixels_outside_window = 0
     last_tdc_warning_time = None
@@ -186,7 +222,7 @@ def main(host: str = "localhost",
     
     def data_callback(new_data) -> None:
         """Time-resolved binning with TDC triggers."""
-        nonlocal event_count, t_zero, cycle_count
+        nonlocal event_count, t_zero, cycle_count, flush_count
         nonlocal pixels_before_trigger, pixels_outside_window
         nonlocal last_tdc_warning_time, first_pixel_time
         
@@ -206,11 +242,25 @@ def main(host: str = "localhost",
                             array_copy = xyt_array.copy()
                             xyt_array.fill(0)
                         
+                        # Calculate cycles in this flush
+                        cycles_in_flush = flush_every_n_cycles
+                        flush_count += 1
+                        
+                        # Create per-flush metadata
+                        flush_metadata = {
+                            'cycles_in_flush': cycles_in_flush,
+                            'total_cycles': cycle_count,
+                            'flush_number': flush_count,
+                            'pixels_discarded_before_trigger': pixels_before_trigger,
+                            'pixels_discarded_outside_window': pixels_outside_window,
+                        }
+                        
                         try:
-                            xyt_queue.put_nowait(array_copy)
-                            logger.info(f"🔄 Flushed x, y, t array after {cycle_count} cycles "
-                                      f"(discarded before trigger: {pixels_before_trigger}, "
-                                      f"outside window: {pixels_outside_window})")
+                            xyt_queue.put_nowait((array_copy, flush_metadata))
+                            logger.info(f"🔄 Flushed x, y, t array: flush #{flush_count}, "
+                                      f"cycles={cycles_in_flush}, total_cycles={cycle_count}, "
+                                      f"(discarded: {pixels_before_trigger} before trigger, "
+                                      f"{pixels_outside_window} outside window)")
                             pixels_before_trigger = 0
                             pixels_outside_window = 0
                         except queue.Full:
@@ -268,6 +318,9 @@ def main(host: str = "localhost",
         print(f"🚀 Starting server on localhost:{port}")
         server.start()
 
+        # Server is now ready for connections
+        heartbeat.set_state(ServerState.READY)
+
         # Wait so the console can be read
         wait_after_start = 1
         print(f"\n⏱️  Waiting for {wait_after_start} seconds...")
@@ -286,15 +339,33 @@ def main(host: str = "localhost",
         reset_event = threading.Event()
         print_event = threading.Event()
         
-        # Start input listener thread
-        input_thread = threading.Thread(
-            target=input_listener, 
-            args=(server, reset_event, print_event, stop_event), 
-            daemon=True
-        )
-        input_thread.start()
+        # Start input listener thread (only if not in exit_on_disconnect mode)
+        input_thread = None
+        if not exit_on_disconnect:
+            input_thread = threading.Thread(
+                target=input_listener, 
+                args=(server, reset_event, print_event, stop_event), 
+                daemon=True
+            )
+            input_thread.start()
 
-        while True:
+        # Track client connection state for heartbeat updates
+        was_client_connected = False
+
+        while server.running:
+            # Check if we should exit due to client disconnect
+            if exit_on_disconnect and server.client_disconnected_event.is_set():
+                logger.info("Client disconnected, initiating shutdown...")
+                break
+            
+            # Update heartbeat state based on client connection
+            if server.client_connected and not was_client_connected:
+                heartbeat.set_state(ServerState.STREAMING)
+                was_client_connected = True
+            elif not server.client_connected and was_client_connected:
+                heartbeat.set_state(ServerState.READY)
+                was_client_connected = False
+            
             time.sleep(1)
             current_time = time.time()
 
@@ -320,7 +391,7 @@ def main(host: str = "localhost",
                 if print_event.is_set():
                     print(f"📻 TDC channel: {tdc_ch} ({'both' if tdc_ch == 0 else f'ch{tdc_ch}'}) (edge: {tdc_edge})")
                     print(f"〰 TDC frequency: {tdc_frequency:.3e} Hz (time cycle: {t_cycle/1e12:.3e} s)")
-                    print(f"↔️  Time bin width: {t_delta/1E12:.3e} s (# of bins: {n_bins:.3e})")
+                    print(f"↕️  Time bin width: {t_delta/1E12:.3e} s (# of bins: {n_bins:.3e})")
                     print(f"📼 3D array (x,y,t): {array_size_gb:.3f} GB [{xyt_array.shape}]")
                     print(f"                     (flushed every {flush_interval} s ({flush_every_n_cycles:.3e} cycles)")
                     print()
@@ -345,11 +416,17 @@ def main(host: str = "localhost",
                     session_duration = 0
                     session_rate_str = "N/A"
                 
-                info = (
-                    f"🛑 Press Ctrl+C to stop the server\n"
-                    f"🔄 Type 'r' to reset session stats\n"
-                    f"⚙️  Type 'p' to print timing settings\n"
-                )
+                # Build info string based on mode
+                if exit_on_disconnect:
+                    info = (
+                        f"🔄 Running in orchestrated mode (will exit on client disconnect)\n"
+                    )
+                else:
+                    info = (
+                        f"🛑 Press Ctrl+C to stop the server\n"
+                        f"🔄 Type 'r' to reset session stats\n"
+                        f"⚙️  Type 'p' to print timing settings\n"
+                    )
                 
                 # Get stats
                 xyt_queue_size = xyt_queue.qsize()
@@ -365,6 +442,7 @@ def main(host: str = "localhost",
                     f"📦 [queue] messages: {queue_size} / {server.buffer_size}\n"
                     f"📝 [buffer] callback: {callback_buffer_size} / {callback_batch_size}\n"
                     f"📊 [queue] x,y,t 3D: {xyt_queue_str}\n"
+                    f"🔄 Flushes: {flush_count} (cycles: {cycle_count})\n"
                 )
                 
                 session_stats = (
@@ -410,9 +488,13 @@ def main(host: str = "localhost",
 
     except KeyboardInterrupt:
         print("\n🛑 Shutting down server...")
-        
+    
+    finally:
         # Signal all threads to stop
         stop_event.set()
+        
+        # Stop heartbeat
+        heartbeat.stop()
         
         # Stop the server (closes sockets, stops threads)
         server.stop()
@@ -424,8 +506,8 @@ def main(host: str = "localhost",
             if worker_thread.is_alive():
                 logger.warning("Worker thread did not finish in time")
         
-        # Wait for input listener thread
-        if input_thread.is_alive():
+        # Wait for input listener thread (if it was started)
+        if input_thread and input_thread.is_alive():
             logger.info("Waiting for input listener to finish...")
             input_thread.join(timeout=2)
             if input_thread.is_alive():
@@ -436,3 +518,4 @@ def main(host: str = "localhost",
 
 if __name__ == "__main__":
     app()
+    

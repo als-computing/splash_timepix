@@ -10,6 +10,7 @@ import select
 import sys
 import time
 import os
+from typing import Optional
 
 import cv2
 import zmq
@@ -74,12 +75,11 @@ def plotting_worker(xyt_queue, stop_event):
     
     The y-coordinate of the detector is summed over (collapsed).
     
-    Note: OpenCV GUI rendering requires a windowing system. This worker is
-    designed for Linux and Windows environments. macOS may require running
-    OpenCV on the main thread due to Cocoa framework restrictions.
+    Note: Now expects tuples of (array, flush_metadata) from queue, but only
+    uses the array for plotting.
     
     Args:
-        xyt_queue: Thread-safe queue containing 3D numpy arrays
+        xyt_queue: Thread-safe queue containing (array, metadata) tuples
         stop_event: Threading event to signal shutdown
         
     Interactive Controls:
@@ -97,13 +97,14 @@ def plotting_worker(xyt_queue, stop_event):
         
         while not stop_event.is_set():
             try:
-                array_data = xyt_queue.get(timeout=0.1)
+                # Unpack the format (array, metadata)
+                array_data, flush_metadata = xyt_queue.get(timeout=0.1)
                 
                 logger.info(f"📊 Plotting worker received array: shape={array_data.shape}, "
-                          f"total={np.sum(array_data)}")
+                          f"total={np.sum(array_data)}, flush_meta={flush_metadata}")
                 
                 # Sum over y-axis: (x, y, t) -> (x, t)
-                heatmap_data = np.sum(array_data, axis=0) #$% axis=1) somewhere x & y get swapped FIX
+                heatmap_data = np.sum(array_data, axis=1)
                 
                 # Transpose for display: (t, x)
                 # Rows = time bins (top to bottom), Cols = x position (left to right)
@@ -159,6 +160,15 @@ def plotting_worker(xyt_queue, stop_event):
                 cv2.putText(colored, text, position, 
                            font, font_scale, text_color, font_thickness)
                 
+                # Flush info if available
+                if flush_metadata:
+                    text = f"Flush #{flush_metadata.get('flush_number', '?')} ({flush_metadata.get('cycles_in_flush', '?')} cycles)"
+                    position = (10, 120)
+                    cv2.putText(colored, text, (position[0]+1, position[1]+1), 
+                               font, font_scale, shadow_color, font_thickness+1)
+                    cv2.putText(colored, text, position, 
+                               font, font_scale, text_color, font_thickness)
+                
                 # Display
                 cv2.imshow(window_name, colored)
                 
@@ -202,7 +212,8 @@ def plotting_worker(xyt_queue, stop_event):
         logger.info("Plotting worker thread finished")
 
 
-def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
+def zmq_worker(xyt_queue, stop_event, zmq_port: int = 5657, 
+               static_metadata: Optional[dict] = None):
     """Worker thread that publishes accumulated 3D arrays via ZMQ PUB socket.
     
     Dequeues arrays of shape (x, y, t) from the processing queue and publishes
@@ -210,10 +221,27 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
     
     Message format (multi-part):
         Part 1: Metadata (msgpack encoded dict)
+            Static fields (from app.py configuration):
+            - 'tdc_frequency_hz': TDC trigger frequency
+            - 't_delta_ns': Time bin width in nanoseconds
+            - 't_cycle_ns': Full time cycle in nanoseconds  
+            - 'n_bins': Number of time bins
+            - 'flush_interval_s': Configured flush interval
+            - 'cycles_per_flush': Expected cycles per flush
+            - 'tdc_channel': TDC channel (0=both, 1, 2)
+            - 'tdc_edge': TDC edge ("rising" or "falling")
+            
+            Per-flush fields:
             - 'shape': tuple of array dimensions
             - 'dtype': numpy dtype as string
             - 'timestamp': Unix timestamp (float)
-            - 'array_count': Sequential counter
+            - 'array_count': Sequential counter (0-indexed)
+            - 'cycles_in_flush': Actual cycles in this flush
+            - 'total_cycles': Cumulative cycle count
+            - 'flush_number': Sequential flush number (1-indexed)
+            - 'pixels_discarded_before_trigger': Pixels before first TDC
+            - 'pixels_discarded_outside_window': Pixels outside time window
+            
         Part 2: Array data (raw bytes)
     
     Subscribers can receive and reconstruct arrays using:
@@ -222,15 +250,19 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
         array = np.frombuffer(array_bytes, dtype=metadata['dtype']).reshape(metadata['shape'])
     
     Args:
-        xyt_queue: Thread-safe queue containing 3D numpy arrays
+        xyt_queue: Thread-safe queue containing (array, flush_metadata) tuples
         stop_event: Threading event to signal shutdown
         zmq_port: Port number for ZMQ PUB socket (default: 5657)
+        static_metadata: Dict of static configuration parameters to include
         
     Note:
         Uses non-blocking sends (DONTWAIT) to avoid blocking on slow subscribers.
         Arrays are dropped if subscribers can't keep up.
     """
     logger.info(f"ZMQ worker thread started (publishing on tcp://*:{zmq_port})")
+    
+    if static_metadata:
+        logger.info(f"Static metadata: {static_metadata}")
     
     # Create ZMQ context and socket
     context = zmq.Context()
@@ -245,19 +277,23 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
         # Give subscribers time to connect (ZMQ slow joiner problem)
         time.sleep(0.5)
         
-        array_count = 0
+        flush_count = 0
         
         while not stop_event.is_set():
-            try:
-                array_data = xyt_queue.get(timeout=1.0)
+            try:   
+                # Unpack array and per-flush metadata
+                array_data, flush_metadata = xyt_queue.get(timeout=1.0)
                 
-                # Prepare metadata
-                metadata = {
-                    'shape': array_data.shape,
-                    'dtype': str(array_data.dtype),
-                    'timestamp': time.time(),
-                    'array_count': array_count,
-                }
+                # Build combined metadata
+                metadata = {}
+                
+                # Add static metadata first
+                if static_metadata:
+                    metadata.update(static_metadata)
+                
+                # Add per-flush fields
+                metadata['timestamp'] = time.time()
+                metadata.update(flush_metadata)
                 
                 # Serialize metadata with msgpack
                 metadata_bytes = msgpack.packb(metadata)
@@ -270,13 +306,16 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
                     socket.send(metadata_bytes, zmq.SNDMORE | zmq.DONTWAIT)
                     socket.send(array_bytes, zmq.DONTWAIT)
                     
-                    array_count += 1
-                    logger.info(f"📡 Published array #{array_count}: shape={array_data.shape}, "
-                              f"total_counts={np.sum(array_data)}, size={len(array_bytes)/1024/1024:.2f} MB")
+                    flush_num = flush_metadata.get('flush_number', '?')
+                    logger.info(f"📡 Published flush #{flush_num}: shape={array_data.shape}, "
+                              f"total_counts={np.sum(array_data)}, "
+                              f"cycles={flush_metadata.get('cycles_in_flush', '?')}, "
+                              f"size={len(array_bytes)/1024/1024:.2f} MB")
                     
                 except zmq.Again:
-                    logger.warning("ZMQ send would block (no subscribers or slow subscribers), dropping array")
+                    logger.warning("ZMQ send would block (no subscribers or slow subscribers), dropping flush")
                 
+                flush_count += 1
                 xyt_queue.task_done()
                 
             except queue.Empty:
@@ -284,7 +323,7 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
             except Exception as e:
                 logger.error(f"Error in ZMQ worker: {e}", exc_info=True)
         
-        logger.info(f"ZMQ worker published {array_count} arrays total")
+        logger.info(f"ZMQ worker published {flush_count} flushes total")
     
     except Exception as e:
         logger.error(f"Fatal error in ZMQ worker: {e}", exc_info=True)
@@ -294,3 +333,4 @@ def zmq_worker(xyt_queue, stop_event, zmq_port=5657):
         socket.close()
         context.term()
         logger.info("ZMQ worker thread finished")
+        

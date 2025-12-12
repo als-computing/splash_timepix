@@ -23,6 +23,9 @@ app = typer.Typer(help="TimePix3 acquisition orchestrator")
 # PID file location
 PID_FILE = Path("/tmp/tpx_acq_pids")
 
+# Default ports (should match app.py defaults)
+DEFAULT_HEARTBEAT_PORT = 5658
+
 
 def get_project_root() -> Path:
     """Get the project root directory (parent of src/)."""
@@ -81,6 +84,27 @@ def spawn_terminal(title: str, command: str, working_dir: Path) -> Optional[int]
         return None
 
 
+def wait_for_server_ready(port: int = DEFAULT_HEARTBEAT_PORT, 
+                          timeout: float = 30.0) -> bool:
+    """Wait for the streaming server to become ready via heartbeat.
+    
+    Args:
+        port: Heartbeat ZMQ port
+        timeout: Maximum seconds to wait
+        
+    Returns:
+        True if server became ready, False if timeout
+    """
+    try:
+        from splash_timepix.heartbeat import wait_for_ready
+        return wait_for_ready(port=port, timeout=timeout)
+    except ImportError:
+        # Fallback to simple sleep if heartbeat module not available
+        print(f"⚠️  Heartbeat module not available, using fixed delay")
+        time.sleep(5.0)
+        return True
+
+
 @app.command()
 def main(
     tdc: float = typer.Option(
@@ -98,27 +122,33 @@ def main(
         "-o", "--output",
         help="Output directory for data files"
     ),
-    server_delay: float = typer.Option(
-        5.0,
-        "--server-delay",
-        help="Seconds to wait after starting server before launching live-cli"
+    preview: bool = typer.Option(
+        False,
+        "--preview",
+        help="Preview mode: stream only, no file writing"
+    ),
+    server_timeout: float = typer.Option(
+        30.0,
+        "--server-timeout",
+        help="Seconds to wait for streaming server to become ready"
     ),
     livecli_delay: float = typer.Option(
         1.0,
         "--livecli-delay",
-        help="Seconds to wait after starting live-cli before launching acquisition"
+        help="Seconds to wait after server ready before launching live-cli"
     ),
 ):
     """
     Run a TimePix3 acquisition.
 
     Spawns (in this order) streaming server, live-cli and acquisition script
-    in separate terminal windows.
+    in separate terminal windows. Waits for server heartbeat before proceeding.
 
     Example:
         tpx-acq -tdc 100000
         tpx-acq -tdc 100000 -t 60
         tpx-acq -tdc 100000 -t 60 -o /path/to/tpx3/file
+        tpx-acq -tdc 100000 --preview  # Stream only, no file saving
     """
     project_root = get_project_root()
     
@@ -145,29 +175,61 @@ def main(
     
     pids = []
     
-    print(f"🚀 Starting acquisition: {t}s at {tdc} Hz TDC")
-    print(f"📁 Output directory: {output}")
+    mode_str = "PREVIEW (no file saving)" if preview else "ACQUISITION"
+    print(f"🚀 Starting {mode_str}: {t}s at {tdc} Hz TDC")
+    if not preview:
+        print(f"📁 Output directory: {output}")
     print()
     
-    # Spawn streaming server window
-    print("⏳ Spawning streaming server window...")
-    #server_command = f"python -m splash_timepix.app --tdc-frequency {tdc}" # ZMQ
-    server_command = f"python -m splash_timepix.app --plot --tdc-frequency {tdc}" # plot
+    # 1. Spawn streaming server window
+    print("⏳ Starting streaming server...")
+    server_command = (
+        f"python -m splash_timepix.app "
+        f"--tdc-frequency {tdc} "
+        f"--exit-on-disconnect"
+    )
     pid = spawn_terminal("TimePix3 Server", server_command, project_root)
     if pid:
         pids.append(pid)
     
-    # Spawn live-cli window - it will wait, then run
-    print(f"⏳ Spawning live-cli window (will start in {server_delay}s)...")
-    livecli_command = f"sleep {server_delay} && '{live_cli}'"
+    # 2. Wait for server to be ready via heartbeat
+    print(f"⏳ Waiting for server to be ready (timeout: {server_timeout}s)...")
+    if not wait_for_server_ready(timeout=server_timeout):
+        print("❌ Server did not become ready in time")
+        # Kill spawned processes
+        for p in pids:
+            try:
+                os.kill(p, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        raise typer.Exit(1)
+    
+    print("✅ Server ready!")
+    
+    # Small additional delay for stability
+    if livecli_delay > 0:
+        print(f"⏳ Waiting {livecli_delay}s before starting live-cli...")
+        time.sleep(livecli_delay)
+    
+    # 3. Spawn live-cli window
+    print("⏳ Starting live-cli...")
+    livecli_command = f"'{live_cli}'"
     pid = spawn_terminal("TimePix3 Live-CLI", livecli_command, live_cli.parent)
     if pid:
         pids.append(pid)
     
-    # Spawn acquisition window - it will wait, then run
-    total_delay = server_delay + livecli_delay
-    print(f"⏳ Spawning acquisition window (will start in {total_delay}s)...")
-    acq_command = f"sleep {total_delay} && python '{acq_script}' -time {t} -output '{output}'"
+    # Small delay for live-cli to connect
+    time.sleep(1.0)
+    
+    # 4. Spawn acquisition window
+    print("⏳ Starting acquisition...")
+    if preview:
+        # Preview mode: use streaming-only destination
+        acq_command = f"python '{acq_script}' -time {t} --preview"
+    else:
+        # Full acquisition mode
+        acq_command = f"python '{acq_script}' -time {t} -output '{output}'"
+    
     pid = spawn_terminal("TimePix3 Acquisition", acq_command, acq_script.parent)
     if pid:
         pids.append(pid)
@@ -176,14 +238,19 @@ def main(
     if pids:
         save_pids(pids)
     
-    print("✅ All windows spawned!")
+    print()
+    print("✅ All processes started!")
     print()
     print("🛑 To stop acquisition early:")
-    print(f"tpx-stop")
+    print("   tpx-stop")
     print()
     print("🔄 To run another acquisition:")
-    print(f"tpx-acq -tdc <frequency> [-t <seconds>] [-o <path/to/data>]")
+    print("   tpx-acq -tdc <frequency> [-t <seconds>] [-o <path/to/data>]")
+    print()
+    print("👀 To preview without saving:")
+    print("   tpx-acq -tdc <frequency> --preview")
 
 
 if __name__ == "__main__":
     app()
+    
