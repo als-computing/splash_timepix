@@ -100,6 +100,21 @@ class ServalClient:
 
         logging.info(f"Acquisition started: {resp.text.strip()}")
 
+    def stop_acquisition(self) -> None:
+        """Stop the current measurement gracefully."""
+        resp = self._request("get", "/measurement/stop")
+        logging.info(f"Acquisition stopped: {resp.text.strip()}")
+
+    def get_frame_count(self) -> int:
+        """Retrieve the current frame count from the dashboard."""
+        dash = self.get_dashboard()
+        return dash.get("Measurement", {}).get("FrameCount", 0)
+
+    def get_measurement_status(self) -> Dict[str, Any]:
+        """Retrieve measurement status info from the dashboard."""
+        dash = self.get_dashboard()
+        return dash.get("Measurement", {})
+
     def calibrate_toa(self) -> None:
         """Trigger the measurement start."""
         resp = self._request("get", "/detector/calibrate_toa")

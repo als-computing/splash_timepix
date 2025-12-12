@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splash_timepix"
-version = "0.1.1"
+version = "0.3.0"
 description = "Code to stream from timepix"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -26,7 +26,7 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
-dependencies = ["numpy", "typer", "psutil", "opencv-python", "pyzmq", "msgpack"]
+dependencies = ["numpy", "typer", "psutil", "opencv-python", "pyzmq", "msgpack", "requests"]
 
 [project.optional-dependencies]
 dev = ["check-manifest", "pytest", "pre-commit", "black", "flake8", "isort"]

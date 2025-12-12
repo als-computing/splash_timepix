@@ -15,21 +15,22 @@ def main() -> None:
     parser.add_argument(
         "-time",
         type=int,
-        default=25,
-        help="Acquisition duration in seconds (default: 25)"
+        default=19008000, # longest possible acquisition 220 days
+        help="Acquisition duration in seconds (default: inf)"
     )
     parser.add_argument(
         "-output",
         type=str,
-        default="/home/tpx/Desktop/deleteLater",
-        help="Output directory for data files (default: /home/tpx/Desktop/deleteLater)"
+        default="/home/tpx/Desktop/tpxLOCAL/data",
+        #default="/home/tpx/Desktop/deleteLater",
+        help="Output directory for data files (default: /home/tpx/Desktop/tpx3LOCAL/data)"
     )
     args = parser.parse_args()
 
     # Configuration variables
-    BASE_URL = "http://localhost:8080"  # default 8080
+    BASE_URL = "http://localhost:8080" # default: 8080
 
-    #BPC_FILE = Path("/home/tpx/Desktop/tpx3LOCAL/Factory-Settings/pix-config.bpc")
+    BPC_FILE = Path("/home/tpx/Desktop/tpx3LOCAL/Factory-Settings/pix-config.bpc")
     DACS_FILE = Path("/home/tpx/Desktop/tpx3LOCAL/Factory-Settings/pix-config.bpc.dacs")
 
     TRIGGER_MODE = "CONTINUOUS"
@@ -57,7 +58,7 @@ def main() -> None:
     )
 
     # Initialize camera
-    #client.load_configuration("pixelconfig", BPC_FILE)
+    client.load_configuration("pixelconfig", BPC_FILE)
     client.load_configuration("dacs", DACS_FILE)
 
     # Detector configuration
@@ -74,10 +75,19 @@ def main() -> None:
 
     # Set data destination
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # uncomment either (i) both (ii) stream only, (iii) file only
     destination = {
-        "Raw": [{"Base": "tcp://connect@localhost:7070", "QueueSize": 16384}],
-        # "Raw": [{"Base": Path(OUTPUT_DIR).as_uri(), "FilePattern": "raw%Hms_",}],
+        "Raw": [
+            {"Base": "tcp://connect@localhost:7070", "QueueSize": 16384},
+            {"Base": Path(OUTPUT_DIR).as_uri(), "FilePattern": ""},
+            ],
     }
+    # destination = {
+    #     "Raw": [{"Base": "tcp://connect@localhost:7070", "QueueSize": 16384}],
+    # }
+    # destination = {
+    #     "Raw": [{"Base": Path(OUTPUT_DIR).as_uri(), "FilePattern": ""}],
+    # }
 
     client.set_destination(destination)
 
