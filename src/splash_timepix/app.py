@@ -39,11 +39,11 @@ def main(host: str = "localhost",
          plot: bool = False,
          verbose: bool = False,
          zmq_port: int = 5657,
-         tdc_ch: int = 1,
+         tdc_ch: int = 0,
          tdc_edge: str = "rising",
          tdc_frequency: float = 1E0,
-         t_delta_ns: float = 1E6,
-         flush_interval: float = 1.0):
+         t_delta_ns: float = -1,
+         flush_interval: float = 5.0):
     """
     Time-resolved TimePix3 data streaming server.
 
@@ -59,7 +59,7 @@ def main(host: str = "localhost",
         tdc_ch: TDC channel to use (0=both, 1=channel 1, 2=channel 2)
         tdc_edge: TDC edge to trigger on ("rising"[default] or "falling")
         tdc_frequency: Expected TDC trigger frequency in Hz
-        t_delta_ns: Time bin width in nanoseconds
+        t_delta_ns: Time bin width in nanoseconds (defaults to auto-binning)
         flush_interval: Time between array flushes in seconds (default: 1)
     """
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -67,14 +67,19 @@ def main(host: str = "localhost",
     print("=" * 50)
     print()
 
-    # Calculate derived parameters from user-friendly inputs
+    # Calculate binning and display parameters from user inputs
     t_cycle = (1.0 / tdc_frequency) * 1e12  # seconds → picoseconds
-    t_delta = t_delta_ns * 1e3  # nanoseconds → picoseconds
-    # Setup time-resolved binning
-    t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
     t_cycle_ticks = t_cycle / TIMESTAMP_PS_PER_TICK
-    n_bins = math.ceil(t_cycle_ticks / t_delta_ticks)
-
+    if t_delta_ns > 0: # user passed a value
+        t_delta = t_delta_ns * 1e3  # nanoseconds → picoseconds
+        t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
+        n_bins = math.ceil(t_cycle_ticks / t_delta_ticks)
+    else: # default case
+        n_bins = 2000 # using this default number of bins calculate pars
+        t_delta = t_cycle / n_bins # time bin width in picoseconds
+        t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
+        t_delta_ns = t_delta / 1e3  # picoseconds → nanoseconds
+        
     # Set logging level based on verbose flag
     if verbose:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
