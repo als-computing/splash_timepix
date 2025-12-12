@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splash_timepix"
-version = "0.3.0"
+version = "0.3.1"
 description = "Code to stream from timepix"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -39,6 +39,8 @@ test = ["pytest", "pytest-cov", "coverage"]
 
 [project.scripts]
 splash-timepix = "splash_timepix.app:app"
+tpx-acq = "splash_timepix.acquisition_start:app"
+tpx-stop = "splash_timepix.acquisition_stop:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
