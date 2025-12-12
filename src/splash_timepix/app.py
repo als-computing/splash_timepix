@@ -36,17 +36,18 @@ def main(host: str = "localhost",
          port: int = 9090,
          buffer_size: int = 1000,
          callback_batch_size: int = 10000,
-         stats_update_time: int = 3,
+         stats_update_time: int = 1,
          plot: bool = False,
          verbose: bool = False,
          zmq_port: int = 5657,
          tdc_ch: int = 0,
          tdc_edge: str = "rising",
-         tdc_frequency: float = 1E1,
+         tdc_frequency: float = 1E2,
          t_delta_ns: float = -1,
-         n_bins: int = 500,
+         n_bins: int = 350,
          flush_interval: float = 1.0,
          exit_on_disconnect: bool = False,
+         collapse_y: bool = False,
          heartbeat_port: int = 5658):
     """
     Time-resolved TimePix3 data streaming server.
@@ -67,6 +68,7 @@ def main(host: str = "localhost",
         n_bins: Number of bins (used if no t_delta_ns value is passed)
         flush_interval: Time between array flushes in seconds (default: 1)
         exit_on_disconnect: Exit when client disconnects (for orchestrated runs)
+        collapse_y: Send x,y,t (False) or x,t data (True)
         heartbeat_port: Port for ZMQ heartbeat messages (default: 5658)
     """
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -135,24 +137,31 @@ def main(host: str = "localhost",
     
     # Define x, y, t accumulator array
     config = SimulatorConfig()
+
     detector_size_x = config.detector_size_x
     detector_size_y = config.detector_size_y
-    xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
+
+    if collapse_y:
+        xyt_array = np.zeros((detector_size_x, n_bins), dtype=np.uint32)
+    else:
+        xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
+
     xyt_lock = threading.Lock()
     
     # Build static metadata dict (parameters that don't change during run)
-    # Must be after SimulatorConfig to have detector_size_x/y
+    # (depends on whether x,y,t or x,t is sent `collapse_y`)
     static_metadata = {
         'tdc_frequency_hz': tdc_frequency,
         't_delta_ns': t_delta_ns,
-        't_cycle_ns': t_cycle / 1e3,  # picoseconds → nanoseconds
+        't_cycle_ns': t_cycle / 1e3,
         'n_bins': n_bins,
-        'shape': (detector_size_x, detector_size_y, n_bins),
+        'shape': (detector_size_x, n_bins) if collapse_y else (detector_size_x, detector_size_y, n_bins),
         'dtype': 'uint32',
         'flush_interval_s': flush_interval,
         'cycles_per_flush': max(1, int(flush_interval * tdc_frequency)),
         'tdc_channel': tdc_ch,
         'tdc_edge': tdc_edge,
+        'collapse_y': collapse_y,
     }
     
     # Choose worker based on plot flag
@@ -305,12 +314,15 @@ def main(host: str = "localhost",
                 
                 # Calculate time bin and update x, y, t accumulator
                 time_bin = int(t_relative_ticks / t_delta_ticks)
-                
+
                 # Bounds check (shouldn't happen but be safe)
                 if 0 <= time_bin < n_bins:
                     with xyt_lock:
-                        xyt_array[packet.x, packet.y, time_bin] += 1
-
+                        if collapse_y:
+                            xyt_array[packet.x, time_bin] += 1
+                        else:
+                            xyt_array[packet.x, packet.y, time_bin] += 1
+                
     # Set the callback
     server.set_data_callback(data_callback)
 

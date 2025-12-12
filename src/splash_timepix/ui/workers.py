@@ -314,13 +314,17 @@ class ProcessManager(QObject):
             working_dir=serval_dir
         )
     
-    def start_streaming_server(self, tdc_frequency: float, 
-                               tdc_channel: int = 0, tdc_edge: str = "rising",
+    def start_streaming_server(self, tdc_frequency: float, tdc_channel: int = 1,
+                               tdc_edge: str = "rising", collapse_y: bool = True,
                                exit_on_disconnect: bool = True) -> bool:
-        args = ["-m", "splash_timepix.app", 
-                "--tdc-frequency", str(tdc_frequency),
-                "--tdc-ch", str(tdc_channel),
-                "--tdc-edge", tdc_edge]
+        args = [
+            "-m", "splash_timepix.app",
+            "--tdc-frequency", str(tdc_frequency),
+            "--tdc-ch", str(tdc_channel),
+            "--tdc-edge", tdc_edge,
+        ]
+        if collapse_y:
+            args.append("--collapse-y")
         if exit_on_disconnect:
             args.append("--exit-on-disconnect")
         

@@ -321,8 +321,13 @@ class OperatorTab(QWidget):
         array = flush_data.array
         metadata = flush_data.metadata
         
-        # Sum over y-axis for display: (x, y, t) -> (x, t)
-        heatmap_2d = np.sum(array, axis=1)
+        # Check if y was already collapsed at source
+        if array.ndim == 2:
+            # Already (x, t)
+            heatmap_2d = array
+        else:
+            # Sum over y-axis: (x, y, t) -> (x, t)
+            heatmap_2d = np.sum(array, axis=1)
         
         cycles_in_flush = metadata.get('cycles_in_flush', 1)
         flush_number = metadata.get('flush_number', self._flush_count + 1)
@@ -341,7 +346,13 @@ class OperatorTab(QWidget):
             self._flush_count = flush_number
             
             average = self._cumulative_sum / self._total_cycles
-            avg_2d = np.sum(average, axis=1)
+            
+            # Handle both 2D and 3D arrays
+            if average.ndim == 2:
+                avg_2d = average
+            else:
+                avg_2d = np.sum(average, axis=1)
+            
             avg_stats = f"Over {self._total_cycles} cycles | Avg: {np.sum(avg_2d):.2e}"
             self._average_heatmap.set_data(avg_2d, avg_stats)
             
