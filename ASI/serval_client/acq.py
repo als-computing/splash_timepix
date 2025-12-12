@@ -22,8 +22,12 @@ def main() -> None:
         "-output",
         type=str,
         default="/home/tpx/Desktop/tpxLOCAL/data",
-        #default="/home/tpx/Desktop/deleteLater",
         help="Output directory for data files (default: /home/tpx/Desktop/tpx3LOCAL/data)"
+    )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Preview mode: stream only, no file writing"
     )
     args = parser.parse_args()
 
@@ -73,26 +77,29 @@ def main() -> None:
     )
     client.update_detector_config(det_cfg)
 
-    # Set data destination
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    # uncomment either (i) both (ii) stream only, (iii) file only
-    destination = {
-        "Raw": [
-            {"Base": "tcp://connect@localhost:7070", "QueueSize": 16384},
-            {"Base": Path(OUTPUT_DIR).as_uri(), "FilePattern": ""},
+    # Set data destination based on mode
+    if args.preview:
+        # Preview mode: streaming only, no file writing
+        logging.info("📺 PREVIEW MODE: Streaming only, no file saving")
+        destination = {
+            "Raw": [{"Base": "tcp://connect@localhost:7070", "QueueSize": 16384}],
+        }
+    else:
+        # Full acquisition mode: streaming + file writing
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        destination = {
+            "Raw": [
+                {"Base": "tcp://connect@localhost:7070", "QueueSize": 16384},
+                {"Base": Path(OUTPUT_DIR).as_uri(), "FilePattern": ""},
             ],
-    }
-    # destination = {
-    #     "Raw": [{"Base": "tcp://connect@localhost:7070", "QueueSize": 16384}],
-    # }
-    # destination = {
-    #     "Raw": [{"Base": Path(OUTPUT_DIR).as_uri(), "FilePattern": ""}],
-    # }
+        }
 
     client.set_destination(destination)
 
-    logging.info(f"Starting data taking for {N_TRIGGERS} seconds.")
-    logging.info(f"Output directory: {OUTPUT_DIR}")
+    mode_str = "preview" if args.preview else "acquisition"
+    logging.info(f"Starting {mode_str} for {N_TRIGGERS} seconds.")
+    if not args.preview:
+        logging.info(f"Output directory: {OUTPUT_DIR}")
     start_time = time.time()
 
     # Start and wait for acquisition
