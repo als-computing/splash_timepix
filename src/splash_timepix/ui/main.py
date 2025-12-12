@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application window with Operator and Engineering tabs."""
     
-    def __init__(self):
+    def __init__(self, autostart_serval: bool = False):
         super().__init__()
         
         self.setWindowTitle("TimePix3 Acquisition")
@@ -54,7 +54,8 @@ class MainWindow(QMainWindow):
         
         self._setup_ui()
         self._setup_workers()
-        self._start_serval()
+        if autostart_serval:
+            self._start_serval()
     
     def _setup_ui(self):
         """Initialize the UI components."""
@@ -269,11 +270,22 @@ class MainWindow(QMainWindow):
             return
         
         logger.info("Stop requested")
-        self._engineering_tab.append_system_log("Stop requested, calling stop.py...")
-        self._status_bar.showMessage("Stopping acquisition...")
+        self._engineering_tab.append_system_log("Stop requested...")
+        self._status_bar.showMessage("Stopping...")
         
-        # Call stop.py via Serval
-        self._run_stop_script()
+        mode = getattr(self, '_current_mode', 'start')
+        
+        if mode in ("simulator", "replay"):
+            # For simulator/replay, just kill the processes directly
+            self._engineering_tab.append_system_log(f"Stopping {mode} processes...")
+            self._process_manager.stop_process("simulator" if mode == "simulator" else "live-cli")
+            self._process_manager.stop_process("streaming")
+            self._acquiring = False
+            self._operator_tab.set_acquiring(False)
+            self._status_bar.showMessage(f"{mode.capitalize()} stopped")
+        else:
+            # For real acquisition, call stop.py via Serval
+            self._run_stop_script()
     
     def _run_stop_script(self):
         """Run the stop.py script to gracefully stop acquisition."""
@@ -327,9 +339,16 @@ class MainWindow(QMainWindow):
         self._engineering_tab.set_process_status(name, False)
         self._engineering_tab.append_output(name, f"\n--- Process exited (code: {exit_code}) ---\n")
         
-        # If acquisition process stopped, save data and update state
-        if name == "acquisition" and self._acquiring:
-            self._on_acquisition_complete()
+        mode = getattr(self, '_current_mode', 'start')
+        
+        # Check if a relevant process stopped while acquiring
+        if self._acquiring:
+            if name == "acquisition":
+                self._on_acquisition_complete()
+            elif name == "simulator" and mode == "simulator":
+                self._on_acquisition_complete()
+            elif name == "live-cli" and mode == "replay":
+                self._on_acquisition_complete()
     
     @Slot(str, str)
     def _on_process_output(self, name: str, text: str):
@@ -425,6 +444,9 @@ class MainWindow(QMainWindow):
             self._engineering_tab.append_zmq_log("Receiving data from streaming server")
         else:
             self._engineering_tab.append_zmq_log("Not receiving data")
+
+    @Slot(bool)
+    def _on_serval_connection_changed(self, connected: bool):
         """Handle Serval connection state change."""
         if connected:
             self._engineering_tab.append_system_log("Connected to Serval")
@@ -473,13 +495,14 @@ class MainWindow(QMainWindow):
 
 def main():
     """Application entry point."""
-    app = QApplication(sys.argv)
+    import sys
     
-    # Set application style
+    autostart_serval = "--autostart-serval" in sys.argv
+    
+    app = QApplication(sys.argv)
     app.setStyle("Fusion")
     
-    # Create and show main window
-    window = MainWindow()
+    window = MainWindow(autostart_serval=autostart_serval)
     window.show()
     
     sys.exit(app.exec())

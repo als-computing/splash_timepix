@@ -315,8 +315,12 @@ class ProcessManager(QObject):
         )
     
     def start_streaming_server(self, tdc_frequency: float, 
-                                exit_on_disconnect: bool = True) -> bool:
-        args = ["-m", "splash_timepix.app", "--tdc-frequency", str(tdc_frequency)]
+                               tdc_channel: int = 0, tdc_edge: str = "rising",
+                               exit_on_disconnect: bool = True) -> bool:
+        args = ["-m", "splash_timepix.app", 
+                "--tdc-frequency", str(tdc_frequency),
+                "--tdc-ch", str(tdc_channel),
+                "--tdc-edge", tdc_edge]
         if exit_on_disconnect:
             args.append("--exit-on-disconnect")
         
@@ -327,17 +331,41 @@ class ProcessManager(QObject):
             working_dir=self._project_root
         )
     
-    def start_live_cli(self) -> bool:
+    def start_simulator(self, tdc_frequency: float = 1.0, cps: float = 1000.0,
+                        duration: int = 60) -> bool:
+        """Start the simulator in auto-start mode."""
+        args = [
+            "-m", "splash_timepix.simulator_cli",
+            "--auto-start",
+            "--tdc-frequency", str(tdc_frequency),
+            "--cps", str(cps),
+            "--duration", str(duration),
+            "--no-count",  # Better performance for UI
+        ]
+        
+        return self._start_process(
+            name="simulator",
+            program="python",
+            args=args,
+            working_dir=self._project_root
+        )
+    
+    def start_live_cli(self, replay_file: Optional[str] = None) -> bool:
+        """Start live-cli for real detector or replay mode."""
         live_cli = self._project_root / "ASI" / "live-cli"
         
         if not live_cli.exists():
             logger.error(f"live-cli not found: {live_cli}")
             return False
         
+        args = []
+        if replay_file:
+            args = ["--source-files", replay_file]
+        
         return self._start_process(
             name="live-cli",
             program=str(live_cli),
-            args=[],
+            args=args,
             working_dir=live_cli.parent
         )
     

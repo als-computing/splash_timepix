@@ -110,6 +110,9 @@ def plotting_worker(xyt_queue, stop_event):
                 # Rows = time bins (top to bottom), Cols = x position (left to right)
                 heatmap_data = heatmap_data.T
                 
+                # Flip vertically so time bin 0 is at bottom
+                heatmap_data = np.flipud(heatmap_data)
+
                 # Calculate stats
                 total_counts = np.sum(heatmap_data)
                 max_counts = np.max(heatmap_data)

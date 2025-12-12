@@ -36,15 +36,16 @@ def main(host: str = "localhost",
          port: int = 9090,
          buffer_size: int = 1000,
          callback_batch_size: int = 10000,
-         stats_update_time: int = 2,
+         stats_update_time: int = 3,
          plot: bool = False,
          verbose: bool = False,
          zmq_port: int = 5657,
          tdc_ch: int = 0,
          tdc_edge: str = "rising",
-         tdc_frequency: float = 1E0,
+         tdc_frequency: float = 1E1,
          t_delta_ns: float = -1,
-         flush_interval: float = 5.0,
+         n_bins: int = 500,
+         flush_interval: float = 1.0,
          exit_on_disconnect: bool = False,
          heartbeat_port: int = 5658):
     """
@@ -63,6 +64,7 @@ def main(host: str = "localhost",
         tdc_edge: TDC edge to trigger on ("rising"[default] or "falling")
         tdc_frequency: Expected TDC trigger frequency in Hz
         t_delta_ns: Time bin width in nanoseconds (defaults to auto-binning)
+        n_bins: Number of bins (used if no t_delta_ns value is passed)
         flush_interval: Time between array flushes in seconds (default: 1)
         exit_on_disconnect: Exit when client disconnects (for orchestrated runs)
         heartbeat_port: Port for ZMQ heartbeat messages (default: 5658)
@@ -79,12 +81,11 @@ def main(host: str = "localhost",
     # Calculate binning and display parameters from user inputs
     t_cycle = (1.0 / tdc_frequency) * 1e12  # seconds → picoseconds
     t_cycle_ticks = t_cycle / TIMESTAMP_PS_PER_TICK
-    if t_delta_ns > 0: # user passed a value
+    if t_delta_ns > 0: # user passed a value for width of one bin
         t_delta = t_delta_ns * 1e3  # nanoseconds → picoseconds
         t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
         n_bins = math.ceil(t_cycle_ticks / t_delta_ticks)
-    else: # default case
-        n_bins = 2000 # using this default number of bins calculate pars
+    else: # use default or user-defined value for number of bins
         t_delta = t_cycle / n_bins # time bin width in picoseconds
         t_delta_ticks = t_delta / TIMESTAMP_PS_PER_TICK
         t_delta_ns = t_delta / 1e3  # picoseconds → nanoseconds

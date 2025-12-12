@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splash_timepix"
-version = "0.4.0"
+version = "0.4.1"
 description = "Code to stream from timepix"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -39,10 +39,11 @@ test = ["pytest", "pytest-cov", "coverage"]
 "Source" = "https://github.com/als-computing/splash_timepix"
 
 [project.scripts]
-splash-timepix = "splash_timepix.app:app"
+tpx-stream = "splash_timepix.app:app"
 tpx-acq = "splash_timepix.acquisition_start:app"
 tpx-stop = "splash_timepix.acquisition_stop:app"
-tpx-ui = "splash_timepix.ui.main:main" 
+tpx-ui = "splash_timepix.ui.main:main"
+tpx-sim = "splash_timepix.simulator_cli:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

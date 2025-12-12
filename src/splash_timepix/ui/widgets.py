@@ -145,7 +145,8 @@ class HeatmapWidget(QWidget):
         if self._data is None:
             return
         
-        display_data = self._data.T.astype(np.float32)
+        # Transpose and flip: time bin 0 at bottom
+        display_data = np.flipud(self._data.T.astype(np.float32))
         
         if self._auto_scale:
             vmin, vmax = display_data.min(), display_data.max()
