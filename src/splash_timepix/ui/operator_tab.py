@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from typing import Optional
+import json
 
 import numpy as np
 from PySide6.QtWidgets import (
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, Slot
 
-from .widgets import HeatmapWidget, StatusIndicator
+from .widgets import HeatmapWidget, StatusIndicator, get_colormap
 from .workers import FlushData, ServalStatus, HeartbeatStatus
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class OperatorTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
+        self._last_metadata: Optional[dict] = None
         self._acquiring = False
         self._cumulative_sum: Optional[np.ndarray] = None
         self._total_cycles = 0
@@ -321,6 +323,9 @@ class OperatorTab(QWidget):
         array = flush_data.array
         metadata = flush_data.metadata
         
+        # Store latest metadata
+        self._last_metadata = metadata
+      
         # Check if y was already collapsed at source
         if array.ndim == 2:
             # Already (x, t)
@@ -390,3 +395,86 @@ class OperatorTab(QWidget):
     def get_cumulative_data(self) -> tuple[Optional[np.ndarray], int]:
         return self._cumulative_sum, self._total_cycles
     
+    def save_average_data(self, output_dir: str, filename_base: str
+                          ) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
+        """Save the average heatmap as PNG, CSV, and metadata as JSON.
+        
+        Args:
+            output_dir: Directory to save files
+            filename_base: Base filename (without extension)
+        
+        Returns:
+            Tuple of (png_path, csv_path, json_path) or None for each if failed
+        """
+        import json
+        
+        if self._cumulative_sum is None or self._total_cycles == 0:
+            logger.warning("No data to save")
+            return None, None, None
+        
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Calculate average
+        average = self._cumulative_sum / self._total_cycles
+        
+        # Get 2D heatmap
+        if average.ndim == 2:
+            avg_2d = average
+        else:
+            avg_2d = np.sum(average, axis=1)
+        
+        # Save CSV
+        csv_path = output_path / f"{filename_base}.csv"
+        try:
+            np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
+            logger.info(f"Saved CSV: {csv_path}")
+        except Exception as e:
+            logger.error(f"Failed to save CSV: {e}")
+            csv_path = None
+        
+        # Save PNG
+        png_path = output_path / f"{filename_base}.png"
+        try:
+            display_data = np.flipud(avg_2d.T.astype(np.float32))
+            vmin, vmax = display_data.min(), display_data.max()
+            if vmax <= vmin:
+                vmax = vmin + 1
+            normalized = np.clip((display_data - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+            
+            cmap = get_colormap(self._colormap_combo.currentText())
+            rgb = cmap[normalized]
+            
+            from PySide6.QtGui import QImage
+            h, w = rgb.shape[:2]
+            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            qimg.save(str(png_path))
+            logger.info(f"Saved PNG: {png_path}")
+        except Exception as e:
+            logger.error(f"Failed to save PNG: {e}")
+            png_path = None
+        
+        # Save metadata JSON
+        json_path = output_path / f"{filename_base}_meta.json"
+        try:
+            meta = {
+                # Statistics from UI
+                "total_flushes": self._flush_count,
+                "total_cycles": self._total_cycles,
+                "total_counts": float(np.sum(self._cumulative_sum)),
+                "avg_counts_per_cycle": float(np.sum(self._cumulative_sum) / self._total_cycles),
+                "array_shape": list(avg_2d.shape),
+            }
+            
+            # Add ZMQ metadata if available
+            if self._last_metadata:
+                meta["zmq_metadata"] = self._last_metadata
+            
+            with open(json_path, "w") as f:
+                json.dump(meta, f, indent=2)
+            logger.info(f"Saved JSON: {json_path}")
+        except Exception as e:
+            logger.error(f"Failed to save JSON: {e}")
+            json_path = None
+        
+        return png_path, csv_path, json_path

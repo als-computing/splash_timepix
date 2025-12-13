@@ -5,8 +5,8 @@ import argparse
 import logging
 from pathlib import Path
 import time
-#
-from lib import ServalError, ServalClient
+
+from .lib import ServalError, ServalClient
 
 
 def main() -> None:
@@ -31,24 +31,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Configuration variables
-    BASE_URL = "http://localhost:8080" # default: 8080
-
+    # Data and settings locations
+    OUTPUT_DIR = Path(args.output)
     BPC_FILE = Path("/home/tpx/Desktop/tpx3LOCAL/Factory-Settings/pix-config.bpc")
     DACS_FILE = Path("/home/tpx/Desktop/tpx3LOCAL/Factory-Settings/pix-config.bpc.dacs")
-
+    # Configuration variables
     TRIGGER_MODE = "CONTINUOUS"
     N_TRIGGERS = args.time  # acquisition duration (in seconds) for continuous mode
     TRIGGER_PERIOD = 1.0  # leave this at 1 second for continuous mode
     EXPOSURE_TIME = 1.0  # equal to trigger period for continuous mode
 
-    OUTPUT_DIR = Path(args.output)
-
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s"
     )
 
-    client = ServalClient(BASE_URL)
+    client = ServalClient() # use default BASE_URL
     client.check_connection()
     logging.debug("Connected to Serval")
 

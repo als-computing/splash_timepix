@@ -24,6 +24,8 @@ from .workers import (
     ServalPollerWorker, FlushData, ServalStatus, HeartbeatStatus
 )
 
+from splash_timepix.serval_client import ServalClient
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -138,19 +140,24 @@ class MainWindow(QMainWindow):
     
     @Slot(str, dict)
     def _on_start_requested(self, mode: str, params: dict):
-        """Handle start request from operator tab.
-        
-        Args:
-            mode: One of "start", "preview", "simulator", "replay"
-            params: Dict with tdc_frequency, tdc_channel, tdc_edge, duration, output_dir, replay_file
-        """
+        """Handle start request from operator tab."""
         if self._acquiring:
             logger.warning("Already acquiring")
             return
         
         self._current_mode = mode
-        self._current_output_dir = params['output_dir']
+        self._current_output_dir = params.get('output_dir')
+        self._current_replay_file = params.get('replay_file')
+        self._current_frame_number = None  # Reset
         
+        # For real acquisition, get frame number from Serval now
+        if mode == "start":
+            try:
+                client = ServalClient()
+                self._current_frame_number = client.get_frame_count()
+            except Exception:
+                self._current_frame_number = None
+                
         tdc_freq = params['tdc_frequency']
         tdc_channel = params['tdc_channel']
         tdc_edge = params['tdc_edge']
@@ -275,6 +282,10 @@ class MainWindow(QMainWindow):
         
         mode = getattr(self, '_current_mode', 'start')
         
+        # Save data for real acquisition and replay modes
+        if mode in ("start", "replay"):
+            self._save_on_stop(mode)
+        
         if mode in ("simulator", "replay"):
             # For simulator/replay, just kill the processes directly
             self._engineering_tab.append_system_log(f"Stopping {mode} processes...")
@@ -286,32 +297,47 @@ class MainWindow(QMainWindow):
         else:
             # For real acquisition, call stop.py via Serval
             self._run_stop_script()
+
+    def _save_on_stop(self, mode: str):
+        """Save average data when stopping acquisition or replay."""
+        # For replay, save next to the source file
+        # For acquisition, use the configured output dir
+        if mode == "replay" and self._current_replay_file:
+            output_dir = str(Path(self._current_replay_file).parent)
+            filename_base = Path(self._current_replay_file).stem + "_average"
+        else:
+            output_dir = self._current_output_dir
+            if not output_dir:
+                output_dir = str(Path.home() / "Desktop")
+                self._engineering_tab.append_system_log(f"No output dir set, using {output_dir}")
+            
+            frame_number = self._current_frame_number
+            if frame_number is not None:
+                filename_base = f"frame_{frame_number}_average"
+            else:
+                filename_base = f"acquisition_average_{int(time.time())}"
+        
+        self._engineering_tab.append_system_log(f"Saving to {output_dir} as {filename_base}...")
+        
+        png_path, csv_path, json_path = self._operator_tab.save_average_data(output_dir, filename_base)
+        
+        if png_path:
+            self._engineering_tab.append_system_log(f"Saved: {png_path}")
+        if csv_path:
+            self._engineering_tab.append_system_log(f"Saved: {csv_path}")
+        if json_path:
+            self._engineering_tab.append_system_log(f"Saved: {json_path}")
+        if not png_path and not csv_path and not json_path:
+            self._engineering_tab.append_system_log("No data to save")
     
     def _run_stop_script(self):
-        """Run the stop.py script to gracefully stop acquisition."""
-        import subprocess
-        from pathlib import Path
-        
-        project_root = Path(__file__).parent.parent.parent.parent
-        stop_script = project_root / "ASI" / "serval_client" / "stop.py"
-        
-        if stop_script.exists():
-            try:
-                result = subprocess.run(
-                    [sys.executable, str(stop_script)],
-                    cwd=stop_script.parent,
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    self._engineering_tab.append_system_log("Stop command sent successfully")
-                else:
-                    self._engineering_tab.append_system_log(f"Stop script error: {result.stderr}")
-            except Exception as e:
-                self._engineering_tab.append_system_log(f"Error running stop script: {e}")
-        else:
-            self._engineering_tab.append_system_log("stop.py not found, killing processes...")
+        """Stop acquisition via Serval."""
+        try:
+            client = ServalClient()
+            client.stop_acquisition()
+            self._engineering_tab.append_system_log("Stop command sent successfully")
+        except Exception as e:
+            self._engineering_tab.append_system_log(f"Stop failed: {e}, killing processes...")
             self._process_manager.stop_all()
     
     @Slot()

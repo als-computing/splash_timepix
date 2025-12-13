@@ -2,7 +2,7 @@
 Stop a running TimePix3 acquisition gracefully.
 """
 import logging
-from lib import ServalError, ServalClient
+from .lib import ServalError, ServalClient
 
 
 def main() -> None:
@@ -19,3 +19,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    

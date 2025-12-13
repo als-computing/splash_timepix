@@ -17,7 +17,8 @@ class ServalClient:
     Client to interact with the Serval detector server via HTTP.
     """
 
-    def __init__(self, base_url: str, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str = "http://localhost:8080",
+                 timeout: float = 10.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
         self.timeout = timeout

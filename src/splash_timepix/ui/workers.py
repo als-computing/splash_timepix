@@ -12,7 +12,6 @@ from typing import Optional
 import numpy as np
 import zmq
 import msgpack
-import requests
 from PySide6.QtCore import QThread, Signal, QProcess, QObject
 
 logger = logging.getLogger(__name__)
@@ -203,51 +202,39 @@ class HeartbeatMonitorWorker(QThread):
 # Serval Poller Worker  
 # =============================================================================
 
+from splash_timepix.serval_client import ServalClient
+
 class ServalPollerWorker(QThread):
     """Background thread that polls Serval server for status."""
     
     status_updated = Signal(object)  # ServalStatus
     connection_changed = Signal(bool)
     
-    def __init__(self, base_url: str = "http://localhost:8080", 
-                 poll_interval: float = 1.0, parent=None):
+    def __init__(self, poll_interval: float = 1.0, parent=None):
         super().__init__(parent)
-        self.base_url = base_url
         self.poll_interval = poll_interval
         self._running = False
         self._connected = False
     
     def run(self):
-        import sys
-        import requests
-        
         self._running = True
+        client = ServalClient()
         
-        # Give Serval time to start up
-        time.sleep(2.0)
+        time.sleep(3.0)  # Give Serval time to start
         
         while self._running:
             try:
-                # Direct HTTP request instead of using lib.py
-                response = requests.get(
-                    f"{self.base_url}/dashboard",
-                    timeout=5.0
-                )
-                response.raise_for_status()
-                dashboard = response.json()
-                
-                # Measurement can be null when no acquisition is running
-                measurement = dashboard.get("Measurement") or {}
+                meta = client.get_measurement_status()
                 
                 status = ServalStatus(
                     connected=True,
-                    pixel_event_rate=measurement.get("PixelEventRate", 0) or 0,
-                    tdc1_event_rate=measurement.get("Tdc1EventRate", 0) or 0,
-                    tdc2_event_rate=measurement.get("Tdc2EventRate", 0) or 0,
-                    frame_count=measurement.get("FrameCount", 0) or 0,
-                    elapsed_time=measurement.get("ElapsedTime", 0.0) or 0.0,
-                    time_left=measurement.get("TimeLeft", 0.0) or 0.0,
-                    status=measurement.get("Status") or "IDLE",
+                    pixel_event_rate=meta.get("PixelEventRate", 0) or 0,
+                    tdc1_event_rate=meta.get("Tdc1EventRate", 0) or 0,
+                    tdc2_event_rate=meta.get("Tdc2EventRate", 0) or 0,
+                    frame_count=meta.get("FrameCount", 0) or 0,
+                    elapsed_time=meta.get("ElapsedTime", 0.0) or 0.0,
+                    time_left=meta.get("TimeLeft", 0.0) or 0.0,
+                    status=meta.get("Status") or "IDLE",
                 )
                 
                 if not self._connected:
@@ -256,13 +243,6 @@ class ServalPollerWorker(QThread):
                 
                 self.status_updated.emit(status)
                 
-            except requests.exceptions.RequestException as e:
-                logger.debug(f"Serval poll error: {e}")
-                if self._connected:
-                    self._connected = False
-                    self.connection_changed.emit(False)
-                status = ServalStatus(connected=False, error=str(e))
-                self.status_updated.emit(status)
             except Exception as e:
                 logger.debug(f"Serval poll error: {e}")
                 if self._connected:
