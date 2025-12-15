@@ -6,13 +6,12 @@ from .lib import ServalError, ServalClient
 
 
 def main() -> None:
-    BASE_URL = "http://localhost:8080"
 
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s"
     )
 
-    client = ServalClient(BASE_URL)
+    client = ServalClient()
     client.check_connection()
     client.stop_acquisition()
 

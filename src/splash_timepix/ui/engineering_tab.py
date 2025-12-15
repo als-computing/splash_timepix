@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, Slot
 
+from . import theme
 from .widgets import TerminalWidget
 
 logger = logging.getLogger(__name__)
@@ -35,18 +36,19 @@ class EngineeringTab(QWidget):
         toolbar = QHBoxLayout()
         
         kill_all_btn = QPushButton("🛑 Kill All Processes")
-        kill_all_btn.setStyleSheet("background-color: #dc2626; color: white; padding: 6px 12px;")
+        kill_all_btn.setStyleSheet(theme.button_style(theme.BUTTON_STOP))
         kill_all_btn.clicked.connect(self.kill_all_requested.emit)
         toolbar.addWidget(kill_all_btn)
         
         clear_btn = QPushButton("🧹 Clear Logs")
+        clear_btn.setStyleSheet(theme.secondary_button_style())
         clear_btn.clicked.connect(self._clear_all_logs)
         toolbar.addWidget(clear_btn)
         
         toolbar.addStretch()
         
         self._status_label = QLabel("No processes running")
-        self._status_label.setStyleSheet("color: #888;")
+        self._status_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
         toolbar.addWidget(self._status_label)
         
         layout.addLayout(toolbar)
@@ -115,10 +117,10 @@ class EngineeringTab(QWidget):
         
         if running:
             self._status_label.setText(f"Running: {', '.join(running)}")
-            self._status_label.setStyleSheet("color: #4ade80;")
+            self._status_label.setStyleSheet(f"color: {theme.STATUS_OK};")
         else:
             self._status_label.setText("No processes running")
-            self._status_label.setStyleSheet("color: #888;")
+            self._status_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
     
     def clear_terminal(self, process_name: str):
         if process_name in self._terminals:

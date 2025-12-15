@@ -1,15 +1,18 @@
 """Custom widgets for the TimePix3 UI."""
 
 import logging
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
-    QFrame, QSizePolicy, QGroupBox
+    QFrame, QSizePolicy
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
+
+from . import theme
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +21,9 @@ logger = logging.getLogger(__name__)
 # Colormap utilities
 # =============================================================================
 
+@lru_cache(maxsize=8)
 def get_colormap(name: str = "viridis") -> np.ndarray:
-    """Get a 256x3 RGB colormap array."""
+    """Get a 256x3 RGB colormap array. Results are cached."""
     colormaps = {
         "viridis": [
             (68, 1, 84), (72, 35, 116), (64, 67, 135), (52, 94, 141),
@@ -78,11 +82,47 @@ def apply_colormap(data: np.ndarray, cmap: np.ndarray,
 
 
 # =============================================================================
+# Vertical Label Widget
+# =============================================================================
+
+class VerticalLabel(QWidget):
+    """A label that draws text rotated -90 degrees (reading bottom to top)."""
+    
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._text = text
+        self.setFixedWidth(20)
+    
+    def set_text(self, text: str):
+        self._text = text
+        self.update()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        font = painter.font()
+        font.setPixelSize(10)
+        painter.setFont(font)
+        painter.setPen(QColor(theme.TEXT_SECONDARY))
+        
+        # Rotate -90 degrees around center
+        painter.translate(self.width() / 2, self.height() / 2)
+        painter.rotate(-90)
+        
+        # Draw text centered
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(self._text)
+        text_height = metrics.height()
+        painter.drawText(-text_width // 2, text_height // 4, self._text)
+
+
+# =============================================================================
 # Heatmap Widget
 # =============================================================================
 
 class HeatmapWidget(QWidget):
-    """Widget that displays a 2D heatmap with colormap."""
+    """Widget that displays a 2D heatmap with colormap and axis labels."""
     
     def __init__(self, title: str = "Heatmap", parent=None):
         super().__init__(parent)
@@ -94,6 +134,10 @@ class HeatmapWidget(QWidget):
         self._vmin = 0.0
         self._vmax = 1.0
         
+        # Axis configuration
+        self._time_bin_ns: Optional[float] = None
+        self._n_bins: Optional[int] = None
+        
         self._setup_ui()
     
     def _setup_ui(self):
@@ -102,26 +146,66 @@ class HeatmapWidget(QWidget):
         
         self._title_label = QLabel(self.title)
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title_label.setStyleSheet("font-weight: bold;")
+        self._title_label.setStyleSheet(f"font-weight: bold; color: {theme.TEXT_PRIMARY};")
         layout.addWidget(self._title_label)
+        
+        # Heatmap with axis labels
+        heatmap_container = QWidget()
+        heatmap_layout = QHBoxLayout(heatmap_container)
+        heatmap_layout.setContentsMargins(0, 0, 0, 0)
+        heatmap_layout.setSpacing(4)
+        
+        # Y-axis label (rotated -90 degrees)
+        self._y_label = VerticalLabel("Time")
+        self._y_label.setFixedWidth(20)
+        heatmap_layout.addWidget(self._y_label)
+        
+        # Image and X-axis
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(2)
         
         self._image_label = QLabel()
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image_label.setMinimumSize(200, 150)
         self._image_label.setSizePolicy(QSizePolicy.Policy.Expanding, 
                                          QSizePolicy.Policy.Expanding)
-        self._image_label.setStyleSheet("background-color: #1a1a2e; border: 1px solid #333;")
-        layout.addWidget(self._image_label)
+        self._image_label.setStyleSheet(theme.heatmap_background_style())
+        center_layout.addWidget(self._image_label)
+        
+        self._x_label = QLabel("Energy (pixels)")
+        self._x_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._x_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-size: 10px;")
+        center_layout.addWidget(self._x_label)
+        
+        heatmap_layout.addWidget(center_widget)
+        layout.addWidget(heatmap_container)
         
         self._stats_label = QLabel("No data")
         self._stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._stats_label.setStyleSheet("color: #888; font-size: 11px;")
+        self._stats_label.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 11px;")
         layout.addWidget(self._stats_label)
     
     def set_colormap(self, name: str):
         self._colormap_name = name
         self._colormap = get_colormap(name)
         self._update_display()
+    
+    def set_axis_info(self, time_bin_ns: float, n_bins: int):
+        """Set axis scaling information for labels."""
+        self._time_bin_ns = time_bin_ns
+        self._n_bins = n_bins
+        self._update_axis_labels()
+    
+    def _update_axis_labels(self):
+        """Update axis labels with current scaling info."""
+        if self._time_bin_ns and self._n_bins:
+            total_time_ns = self._time_bin_ns * self._n_bins
+            if total_time_ns >= 1e6:
+                self._y_label.set_text(f"Time ({self._time_bin_ns/1e3:.1f} µs/bin)")
+            else:
+                self._y_label.set_text(f"Time ({self._time_bin_ns:.0f} ns/bin)")
     
     def set_data(self, data: np.ndarray, stats_text: Optional[str] = None):
         self._data = data
@@ -138,7 +222,7 @@ class HeatmapWidget(QWidget):
     def clear(self):
         self._data = None
         self._image_label.clear()
-        self._image_label.setStyleSheet("background-color: #1a1a2e; border: 1px solid #333;")
+        self._image_label.setStyleSheet(theme.heatmap_background_style())
         self._stats_label.setText("No data")
     
     def _update_display(self):
@@ -173,8 +257,31 @@ class HeatmapWidget(QWidget):
 # Status Indicator Widget
 # =============================================================================
 
+class _IndicatorCircle(QWidget):
+    """Small painted circle for status indication."""
+    
+    def __init__(self, size: int = 12, parent=None):
+        super().__init__(parent)
+        self._size = size
+        self._color = QColor(theme.STATUS_INACTIVE)
+        self.setFixedSize(size, size)
+    
+    def set_color(self, color: QColor):
+        self._color = color
+        self.update()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(self._color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, self._size, self._size)
+
+
 class StatusIndicator(QWidget):
-    """Small colored circle indicator with label."""
+    """Colored circle indicator with label."""
+    
+    INDICATOR_SIZE = 12
     
     def __init__(self, label: str, parent=None):
         super().__init__(parent)
@@ -183,17 +290,18 @@ class StatusIndicator(QWidget):
         
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
         
-        self._indicator = QLabel("●")
-        self._indicator.setStyleSheet("color: #666; font-size: 14px;")
+        # Custom painted circle indicator
+        self._indicator = _IndicatorCircle(self.INDICATOR_SIZE)
         layout.addWidget(self._indicator)
         
         self._label_widget = QLabel(label)
+        self._label_widget.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
         layout.addWidget(self._label_widget)
         
         self._status_widget = QLabel("")
-        self._status_widget.setStyleSheet("color: #888;")
+        self._status_widget.setStyleSheet(f"color: {theme.TEXT_MUTED};")
         layout.addWidget(self._status_widget)
         
         layout.addStretch()
@@ -202,14 +310,14 @@ class StatusIndicator(QWidget):
         self._connected = connected
         
         if connected:
-            self._indicator.setStyleSheet("color: #4ade80; font-size: 14px;")
+            self._indicator.set_color(QColor(theme.STATUS_OK))
         else:
-            self._indicator.setStyleSheet("color: #666; font-size: 14px;")
+            self._indicator.set_color(QColor(theme.STATUS_INACTIVE))
         
         self._status_widget.setText(status)
     
     def set_streaming(self):
-        self._indicator.setStyleSheet("color: #60a5fa; font-size: 14px;")
+        self._indicator.set_color(QColor(theme.STATUS_STREAMING))
 
 
 # =============================================================================
@@ -229,19 +337,24 @@ class TerminalWidget(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        layout.setSpacing(0)
         
         title_bar = QFrame()
-        title_bar.setStyleSheet("background-color: #2d2d3d; border-radius: 4px 4px 0 0;")
+        title_bar.setStyleSheet(f"""
+            background-color: {theme.BG_WIDGET}; 
+            border-radius: 4px 4px 0 0;
+            border: 1px solid {theme.BORDER_SUBTLE};
+            border-bottom: none;
+        """)
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(8, 4, 8, 4)
         
         self._title_label = QLabel(self._title)
-        self._title_label.setStyleSheet("color: #fff; font-weight: bold; font-size: 11px;")
+        self._title_label.setStyleSheet(f"color: {theme.TEXT_PRIMARY}; font-weight: bold; font-size: 11px;")
         title_layout.addWidget(self._title_label)
         
         self._status_label = QLabel("not running")
-        self._status_label.setStyleSheet("color: #888; font-size: 10px;")
+        self._status_label.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
         title_layout.addStretch()
         title_layout.addWidget(self._status_label)
         
@@ -250,17 +363,7 @@ class TerminalWidget(QWidget):
         self._output = QPlainTextEdit()
         self._output.setReadOnly(True)
         self._output.setMaximumBlockCount(self._max_lines)
-        self._output.setStyleSheet("""
-            QPlainTextEdit {
-                background-color: #1a1a2e;
-                color: #e0e0e0;
-                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                font-size: 11px;
-                border: 1px solid #333;
-                border-top: none;
-                border-radius: 0 0 4px 4px;
-            }
-        """)
+        self._output.setStyleSheet(theme.terminal_style())
         layout.addWidget(self._output)
     
     def append_text(self, text: str):
@@ -274,68 +377,7 @@ class TerminalWidget(QWidget):
     def set_status(self, status: str, running: bool = False):
         self._status_label.setText(status)
         if running:
-            self._status_label.setStyleSheet("color: #4ade80; font-size: 10px;")
+            self._status_label.setStyleSheet(f"color: {theme.STATUS_OK}; font-size: 10px;")
         else:
-            self._status_label.setStyleSheet("color: #888; font-size: 10px;")
-
-
-# =============================================================================
-# Statistics Panel Widget
-# =============================================================================
-
-class StatisticsPanel(QGroupBox):
-    """Panel displaying acquisition statistics."""
-    
-    def __init__(self, parent=None):
-        super().__init__("Statistics", parent)
-        self._setup_ui()
-    
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(4)
-        
-        self._stats = {}
-        stat_names = [
-            ("pixel_rate", "Pixel Rate:"),
-            ("tdc1_rate", "TDC1 Rate:"),
-            ("tdc2_rate", "TDC2 Rate:"),
-            ("elapsed", "Elapsed:"),
-            ("remaining", "Remaining:"),
-            ("flushes", "Flushes:"),
-            ("total_cycles", "Total Cycles:"),
-            ("avg_counts", "Avg Counts/Cycle:"),
-        ]
-        
-        for key, label in stat_names:
-            row = QHBoxLayout()
-            name_label = QLabel(label)
-            name_label.setStyleSheet("color: #888;")
-            value_label = QLabel("--")
-            value_label.setStyleSheet("font-family: monospace;")
-            row.addWidget(name_label)
-            row.addStretch()
-            row.addWidget(value_label)
-            layout.addLayout(row)
-            self._stats[key] = value_label
-    
-    def update_serval_stats(self, pixel_rate: float, tdc1_rate: float, 
-                            tdc2_rate: float, elapsed: float, remaining: float):
-        self._stats["pixel_rate"].setText(f"{pixel_rate:.2e} cps")
-        self._stats["tdc1_rate"].setText(f"{tdc1_rate:.1f} Hz")
-        self._stats["tdc2_rate"].setText(f"{tdc2_rate:.1f} Hz")
-        
-        elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
-        remaining_str = f"{int(remaining // 60):02d}:{int(remaining % 60):02d}"
-        self._stats["elapsed"].setText(elapsed_str)
-        self._stats["remaining"].setText(remaining_str)
-    
-    def update_flush_stats(self, flush_number: int, total_cycles: int, 
-                           avg_counts: float):
-        self._stats["flushes"].setText(str(flush_number))
-        self._stats["total_cycles"].setText(f"{total_cycles:,}")
-        self._stats["avg_counts"].setText(f"{avg_counts:.2e}")
-    
-    def clear(self):
-        for label in self._stats.values():
-            label.setText("--")
+            self._status_label.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
             

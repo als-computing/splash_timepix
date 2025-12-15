@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Slot, QTimer
 
+from . import theme
 from .operator_tab import OperatorTab
 from .engineering_tab import EngineeringTab
 from .workers import (
@@ -521,12 +522,75 @@ class MainWindow(QMainWindow):
 
 def main():
     """Application entry point."""
-    import sys
-    
     autostart_serval = "--autostart-serval" in sys.argv
     
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    
+    # Apply base dark theme stylesheet
+    app.setStyleSheet(f"""
+        QMainWindow, QWidget {{
+            background-color: {theme.BG_PANEL};
+            color: {theme.TEXT_PRIMARY};
+        }}
+        QTabWidget::pane {{
+            border: 1px solid {theme.BORDER_SUBTLE};
+            border-radius: 4px;
+            background-color: {theme.BG_PANEL};
+        }}
+        QTabBar::tab {{
+            background-color: {theme.BG_WIDGET};
+            color: {theme.TEXT_SECONDARY};
+            padding: 8px 16px;
+            margin-right: 2px;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+        }}
+        QTabBar::tab:selected {{
+            background-color: {theme.BLUE_PRIMARY};
+            color: white;
+        }}
+        QTabBar::tab:hover:!selected {{
+            background-color: {theme.BG_BUTTON_GROUP};
+        }}
+        QStatusBar {{
+            background-color: {theme.BG_WIDGET};
+            color: {theme.TEXT_SECONDARY};
+            border-top: 1px solid {theme.BORDER_SUBTLE};
+        }}
+        QScrollBar:vertical {{
+            background-color: {theme.BG_DARK};
+            width: 12px;
+            border-radius: 6px;
+        }}
+        QScrollBar::handle:vertical {{
+            background-color: {theme.GREY_DARK};
+            border-radius: 6px;
+            min-height: 20px;
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
+        }}
+        QScrollBar:horizontal {{
+            background-color: {theme.BG_DARK};
+            height: 12px;
+            border-radius: 6px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background-color: {theme.GREY_DARK};
+            border-radius: 6px;
+            min-width: 20px;
+        }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            width: 0px;
+        }}
+        QToolTip {{
+            background-color: {theme.BG_WIDGET};
+            color: {theme.TEXT_PRIMARY};
+            border: 1px solid {theme.BORDER_SUBTLE};
+            padding: 4px;
+        }}
+    """)
     
     window = MainWindow(autostart_serval=autostart_serval)
     window.show()
