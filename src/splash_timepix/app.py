@@ -14,8 +14,9 @@ import numpy as np
 import threading
 import queue
 
-from splash_timepix.socket_server import SocketDataServer, RingBufferHandler
-from splash_timepix.parser import PixelPacket, TDCPacket, TDCEdge
+from splash_timepix.socket_server_np import SocketDataServer, RingBufferHandler
+#from splash_timepix.socket_server import SocketDataServer, RingBufferHandler
+#from splash_timepix.parser import PixelPacket, TDCPacket, TDCEdge
 from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.workers import input_listener, plotting_worker, zmq_worker
 from splash_timepix.heartbeat import HeartbeatPublisher, ServerState
@@ -230,101 +231,426 @@ def main(host: str = "localhost",
     # Convert edge string to enum value
     target_edge = 0 if tdc_edge.lower() == "rising" else 1
     
-    def data_callback(new_data) -> None:
-        """Time-resolved binning with TDC triggers."""
+    # Pre-allocate local accumulator to avoid repeated allocation
+    # (no lock needed during accumulation)
+    if collapse_y:
+        local_accumulator = np.zeros((detector_size_x, n_bins), dtype=np.uint32)
+    else:
+        local_accumulator = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
+    
+    def data_callback_np(result) -> None:
+        """Time-resolved binning - processes pixels and TDCs in temporal order.
+        
+        CRITICAL FIX: The previous version processed all TDCs first, then all pixels.
+        This caused pixels to be binned against the wrong t_zero (the last TDC in batch).
+        
+        This version:
+        1. Filters valid TDCs and gets their timestamps + original indices
+        2. For each TDC (in order), bins all pixels between previous TDC and this one
+        3. Then bins remaining pixels after the last TDC
+        """
         nonlocal event_count, t_zero, cycle_count, flush_count
         nonlocal pixels_before_trigger, pixels_outside_window
         nonlocal last_tdc_warning_time, first_pixel_time
+        nonlocal local_accumulator, xyt_array
         
         current_time = time.time()
         
-        for packet in new_data:
-            # Handle TDC packets
-            if isinstance(packet, TDCPacket):
-                # Check if this TDC matches our criteria
-                matches_channel = (tdc_ch == 0) or (packet.channel == tdc_ch)
-                matches_edge = (packet.edge == target_edge)
-                
-                if matches_channel and matches_edge:
-                    # Flush x, y, t accumulator array if needed
-                    if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
-                        with xyt_lock:
-                            array_copy = xyt_array.copy()
-                            xyt_array.fill(0)
-                        
-                        # Calculate cycles in this flush
-                        cycles_in_flush = flush_every_n_cycles
-                        flush_count += 1
-                        
-                        # Create per-flush metadata
-                        flush_metadata = {
-                            'cycles_in_flush': cycles_in_flush,
-                            'total_cycles': cycle_count,
-                            'flush_number': flush_count,
-                            'pixels_discarded_before_trigger': pixels_before_trigger,
-                            'pixels_discarded_outside_window': pixels_outside_window,
-                        }
-                        
-                        try:
-                            xyt_queue.put_nowait((array_copy, flush_metadata))
-                            logger.info(f"🔄 Flushed x, y, t array: flush #{flush_count}, "
-                                      f"cycles={cycles_in_flush}, total_cycles={cycle_count}, "
-                                      f"(discarded: {pixels_before_trigger} before trigger, "
-                                      f"{pixels_outside_window} outside window)")
-                            pixels_before_trigger = 0
-                            pixels_outside_window = 0
-                        except queue.Full:
-                            logger.warning("Processing queue full, dropping array")
-                    
-                    # Update t_zero and increment cycle count
-                    t_zero = packet.timestamp
-                    cycle_count += 1
-                    last_tdc_warning_time = current_time
+        # Early exit if nothing to process
+        if result.n_pixels == 0 and result.n_tdc == 0:
+            return
+        
+        # =====================================================================
+        # STEP 1: Get valid TDCs sorted by original index (temporal order)
+        # =====================================================================
+        valid_tdc_indices = None
+        valid_tdc_timestamps = None
+        
+        if result.n_tdc > 0:
+            # Filter by channel and edge
+            if tdc_ch == 0:
+                channel_mask = np.ones(result.n_tdc, dtype=bool)
+            else:
+                channel_mask = result.tdc_channel == tdc_ch
             
-            # Handle Pixel packets
-            elif isinstance(packet, PixelPacket):                   
-                if first_pixel_time is None:
-                    first_pixel_time = current_time
+            edge_mask = result.tdc_edge == target_edge
+            valid_tdc_mask = channel_mask & edge_mask
+            
+            if np.any(valid_tdc_mask):
+                valid_tdc_indices = result.tdc_indices[valid_tdc_mask]
+                valid_tdc_timestamps = result.tdc_timestamp[valid_tdc_mask]
                 
-                event_count += 1
+                # Sort by original index to maintain temporal order
+                sort_order = np.argsort(valid_tdc_indices)
+                valid_tdc_indices = valid_tdc_indices[sort_order]
+                valid_tdc_timestamps = valid_tdc_timestamps[sort_order]
+        
+        # =====================================================================
+        # STEP 2: Prepare pixel data
+        # =====================================================================
+        if result.n_pixels > 0:
+            if first_pixel_time is None:
+                first_pixel_time = current_time
+            
+            # TDC timeout warning
+            if (last_tdc_warning_time is None and 
+                current_time - first_pixel_time > 10.0):
+                logger.warning("⚠️  No matching TDC triggers received in 10s")
+                last_tdc_warning_time = current_time
+            
+            pixel_indices = result.pixel_indices
+            pixel_x = result.pixel_x
+            pixel_y = result.pixel_y
+            pixel_ts = result.pixel_timestamp
+        else:
+            pixel_indices = np.array([], dtype=np.int64)
+        
+        # =====================================================================
+        # STEP 3: Process in temporal order using index boundaries
+        # =====================================================================
+        
+        # Helper function to bin a subset of pixels
+        def bin_pixels(mask):
+            """Bin pixels selected by mask against current t_zero."""
+            nonlocal pixels_before_trigger, pixels_outside_window, event_count
+            nonlocal local_accumulator
+            
+            n_selected = np.sum(mask)
+            if n_selected == 0:
+                return
+            
+            if t_zero is None:
+                pixels_before_trigger += int(n_selected)
+                return
+            
+            event_count += int(n_selected)
+            
+            # Get selected pixel data
+            sel_x = pixel_x[mask]
+            sel_y = pixel_y[mask]
+            sel_ts = pixel_ts[mask]
+            
+            # Calculate relative time
+            t_relative = sel_ts - t_zero
+            
+            # Bounds check
+            valid = (t_relative >= 0) & (t_relative < t_cycle_ticks)
+            n_outside = int(n_selected - np.sum(valid))
+            
+            if n_outside > 0:
+                pixels_outside_window += n_outside
+            
+            if not np.any(valid):
+                return
+            
+            # Bin valid pixels
+            x_valid = sel_x[valid]
+            t_valid = t_relative[valid]
+            time_bins = (t_valid / t_delta_ticks).astype(np.int32)
+            np.clip(time_bins, 0, n_bins - 1, out=time_bins)
+            
+            if collapse_y:
+                np.add.at(local_accumulator, (x_valid, time_bins), 1)
+            else:
+                y_valid = sel_y[valid]
+                np.add.at(local_accumulator, (x_valid, y_valid, time_bins), 1)
+        
+        # Helper function to handle TDC trigger (flush check + update t_zero)
+        def handle_tdc(tdc_ts):
+            """Process a TDC trigger: check for flush, update t_zero."""
+            nonlocal t_zero, cycle_count, flush_count
+            nonlocal pixels_before_trigger, pixels_outside_window
+            nonlocal last_tdc_warning_time
+            nonlocal xyt_array, local_accumulator
+            
+            # Check if we need to flush
+            if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
+                with xyt_lock:
+                    xyt_array += local_accumulator
+                    array_copy = xyt_array.copy()
+                    xyt_array.fill(0)
                 
-                # Check for TDC timeout warning (10s after first pixel)
-                if (first_pixel_time is not None and 
-                    last_tdc_warning_time is None and 
-                    current_time - first_pixel_time > 10.0):
-                    logger.warning("⚠️  No matching TDC triggers received in 10s after first pixel")
-                    last_tdc_warning_time = current_time  # Prevent repeated warnings
+                local_accumulator.fill(0)
+                flush_count += 1
                 
-                # Discard pixels before first TDC
-                if t_zero is None:
-                    pixels_before_trigger += 1
-                    continue
+                flush_metadata = {
+                    'cycles_in_flush': flush_every_n_cycles,
+                    'total_cycles': cycle_count,
+                    'flush_number': flush_count,
+                    'pixels_discarded_before_trigger': int(pixels_before_trigger),
+                    'pixels_discarded_outside_window': int(pixels_outside_window),
+                }
                 
-                # Calculate relative time in ticks
-                t_relative_ticks = packet.timestamp - t_zero
+                try:
+                    xyt_queue.put_nowait((array_copy, flush_metadata))
+                    logger.info(f"🔄 Flushed: #{flush_count}, cycles={flush_every_n_cycles}")
+                    pixels_before_trigger = 0
+                    pixels_outside_window = 0
+                except queue.Full:
+                    logger.warning("Processing queue full, dropping array")
+            
+            t_zero = int(tdc_ts)
+            cycle_count += 1
+            last_tdc_warning_time = current_time
+        
+        # =====================================================================
+        # STEP 4: Main processing loop - interleave TDCs and pixels by index
+        # =====================================================================
+        
+        if valid_tdc_indices is None or len(valid_tdc_indices) == 0:
+            # No valid TDCs - just bin all pixels against current t_zero
+            if result.n_pixels > 0:
+                bin_pixels(np.ones(result.n_pixels, dtype=bool))
+        else:
+            # Process pixels and TDCs in temporal order
+            last_boundary = -1  # Start before any packet
+            
+            for i, (tdc_idx, tdc_ts) in enumerate(zip(valid_tdc_indices, valid_tdc_timestamps)):
+                # Bin pixels between last boundary and this TDC
+                if result.n_pixels > 0:
+                    mask = (pixel_indices > last_boundary) & (pixel_indices < tdc_idx)
+                    bin_pixels(mask)
                 
-                # Check if within time window
-                if t_relative_ticks < 0 or t_relative_ticks >= t_cycle_ticks:
-                    pixels_outside_window += 1
-                    if verbose:
-                        t_relative_ps = t_relative_ticks * TIMESTAMP_PS_PER_TICK
-                        logger.warning(f"Pixel outside time window: t_relative={t_relative_ps:.1f} ps "
-                                     f"(window: 0 to {t_cycle} ps)")
-                    continue
-                
-                # Calculate time bin and update x, y, t accumulator
-                time_bin = int(t_relative_ticks / t_delta_ticks)
+                # Process this TDC
+                handle_tdc(tdc_ts)
+                last_boundary = tdc_idx
+            
+            # Bin pixels after the last TDC
+            if result.n_pixels > 0:
+                mask = pixel_indices > last_boundary
+                bin_pixels(mask)
 
-                # Bounds check (shouldn't happen but be safe)
-                if 0 <= time_bin < n_bins:
-                    with xyt_lock:
-                        if collapse_y:
-                            xyt_array[packet.x, time_bin] += 1
-                        else:
-                            xyt_array[packet.x, packet.y, time_bin] += 1
+    # def data_callback_vectorized(new_data) -> None:
+    #     """Time-resolved binning with TDC triggers - VECTORIZED VERSION.
+        
+    #     Key optimizations:
+    #     1. Separates packets by type once, then processes in batches
+    #     2. Uses NumPy vectorized operations for pixel binning
+    #     3. Accumulates into local array, only locks during flush
+    #     4. Uses np.add.at for efficient histogram accumulation
+    #     """
+    #     nonlocal event_count, t_zero, cycle_count, flush_count
+    #     nonlocal pixels_before_trigger, pixels_outside_window
+    #     nonlocal last_tdc_warning_time, first_pixel_time
+    #     nonlocal local_accumulator
+        
+    #     current_time = time.time()
+        
+    #     # ---- STEP 1: Separate packet types (single pass) ----
+    #     pixels = []
+    #     tdcs = []
+        
+    #     for packet in new_data:
+    #         if isinstance(packet, PixelPacket):
+    #             pixels.append(packet)
+    #         elif isinstance(packet, TDCPacket):
+    #             tdcs.append(packet)
+    #         # Control packets ignored for binning
+        
+    #     # ---- STEP 2: Process TDC packets (order matters for t_zero) ----
+    #     for packet in tdcs:
+    #         matches_channel = (tdc_ch == 0) or (packet.channel == tdc_ch)
+    #         matches_edge = (packet.edge == target_edge)
+            
+    #         if matches_channel and matches_edge:
+    #             # Check if we need to flush
+    #             if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
+    #                 with xyt_lock:
+    #                     # Merge local accumulator into main array
+    #                     xyt_array += local_accumulator
+    #                     array_copy = xyt_array.copy()
+    #                     xyt_array.fill(0)
+                    
+    #                 # Clear local accumulator
+    #                 local_accumulator.fill(0)
+                    
+    #                 cycles_in_flush = flush_every_n_cycles
+    #                 flush_count += 1
+                    
+    #                 flush_metadata = {
+    #                     'cycles_in_flush': cycles_in_flush,
+    #                     'total_cycles': cycle_count,
+    #                     'flush_number': flush_count,
+    #                     'pixels_discarded_before_trigger': pixels_before_trigger,
+    #                     'pixels_discarded_outside_window': pixels_outside_window,
+    #                 }
+                    
+    #                 try:
+    #                     xyt_queue.put_nowait((array_copy, flush_metadata))
+    #                     logger.info(f"🔄 Flushed: #{flush_count}, cycles={cycles_in_flush}")
+    #                     pixels_before_trigger = 0
+    #                     pixels_outside_window = 0
+    #                 except queue.Full:
+    #                     logger.warning("Processing queue full, dropping array")
+                
+    #             t_zero = packet.timestamp
+    #             cycle_count += 1
+    #             last_tdc_warning_time = current_time
+        
+    #     # ---- STEP 3: Process Pixel packets (vectorized) ----
+    #     if not pixels:
+    #         return
+        
+    #     if first_pixel_time is None:
+    #         first_pixel_time = current_time
+        
+    #     # TDC timeout warning
+    #     if (first_pixel_time is not None and 
+    #         last_tdc_warning_time is None and 
+    #         current_time - first_pixel_time > 10.0):
+    #         logger.warning("⚠️  No matching TDC triggers received in 10s")
+    #         last_tdc_warning_time = current_time
+        
+    #     # No t_zero yet - count and discard all pixels
+    #     if t_zero is None:
+    #         pixels_before_trigger += len(pixels)
+    #         return
+        
+    #     event_count += len(pixels)
+        
+    #     # ---- VECTORIZED PIXEL PROCESSING ----
+    #     n_pixels = len(pixels)
+        
+    #     # Extract arrays from packet objects
+    #     x_arr = np.empty(n_pixels, dtype=np.int32)
+    #     y_arr = np.empty(n_pixels, dtype=np.int32)
+    #     ts_arr = np.empty(n_pixels, dtype=np.int64)
+        
+    #     for i, p in enumerate(pixels):
+    #         x_arr[i] = p.x
+    #         y_arr[i] = p.y
+    #         ts_arr[i] = p.timestamp
+        
+    #     # Vectorized time calculation
+    #     t_relative = ts_arr - t_zero
+        
+    #     # Vectorized bounds check
+    #     valid_mask = (t_relative >= 0) & (t_relative < t_cycle_ticks)
+    #     n_outside = n_pixels - np.sum(valid_mask)
+        
+    #     if n_outside > 0:
+    #         pixels_outside_window += n_outside
+    #         if verbose and n_outside > 100:
+    #             logger.warning(f"Batch: {n_outside}/{n_pixels} pixels outside window")
+        
+    #     # Filter to valid pixels only
+    #     x_valid = x_arr[valid_mask]
+    #     y_valid = y_arr[valid_mask]
+    #     t_valid = t_relative[valid_mask]
+        
+    #     if len(x_valid) == 0:
+    #         return
+        
+    #     # Vectorized bin calculation
+    #     time_bins = (t_valid / t_delta_ticks).astype(np.int32)
+        
+    #     # Clip bins to valid range (safety check)
+    #     np.clip(time_bins, 0, n_bins - 1, out=time_bins)
+        
+    #     # ---- ACCUMULATE WITHOUT LOCK (into local array) ----
+    #     if collapse_y:
+    #         np.add.at(local_accumulator, (x_valid, time_bins), 1)
+    #     else:
+    #         np.add.at(local_accumulator, (x_valid, y_valid, time_bins), 1)
+
+    
+    # def data_callback(new_data) -> None:
+    #     """Time-resolved binning with TDC triggers."""
+    #     nonlocal event_count, t_zero, cycle_count, flush_count
+    #     nonlocal pixels_before_trigger, pixels_outside_window
+    #     nonlocal last_tdc_warning_time, first_pixel_time
+        
+    #     current_time = time.time()
+        
+    #     for packet in new_data:
+    #         # Handle TDC packets
+    #         if isinstance(packet, TDCPacket):
+    #             # Check if this TDC matches our criteria
+    #             matches_channel = (tdc_ch == 0) or (packet.channel == tdc_ch)
+    #             matches_edge = (packet.edge == target_edge)
+                
+    #             if matches_channel and matches_edge:
+    #                 # Flush x, y, t accumulator array if needed
+    #                 if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
+    #                     with xyt_lock:
+    #                         array_copy = xyt_array.copy()
+    #                         xyt_array.fill(0)
+                        
+    #                     # Calculate cycles in this flush
+    #                     cycles_in_flush = flush_every_n_cycles
+    #                     flush_count += 1
+                        
+    #                     # Create per-flush metadata
+    #                     flush_metadata = {
+    #                         'cycles_in_flush': cycles_in_flush,
+    #                         'total_cycles': cycle_count,
+    #                         'flush_number': flush_count,
+    #                         'pixels_discarded_before_trigger': pixels_before_trigger,
+    #                         'pixels_discarded_outside_window': pixels_outside_window,
+    #                     }
+                        
+    #                     try:
+    #                         xyt_queue.put_nowait((array_copy, flush_metadata))
+    #                         logger.info(f"🔄 Flushed x, y, t array: flush #{flush_count}, "
+    #                                   f"cycles={cycles_in_flush}, total_cycles={cycle_count}, "
+    #                                   f"(discarded: {pixels_before_trigger} before trigger, "
+    #                                   f"{pixels_outside_window} outside window)")
+    #                         pixels_before_trigger = 0
+    #                         pixels_outside_window = 0
+    #                     except queue.Full:
+    #                         logger.warning("Processing queue full, dropping array")
+                    
+    #                 # Update t_zero and increment cycle count
+    #                 t_zero = packet.timestamp
+    #                 cycle_count += 1
+    #                 last_tdc_warning_time = current_time
+            
+    #         # Handle Pixel packets
+    #         elif isinstance(packet, PixelPacket):                   
+    #             if first_pixel_time is None:
+    #                 first_pixel_time = current_time
+                
+    #             event_count += 1
+                
+    #             # Check for TDC timeout warning (10s after first pixel)
+    #             if (first_pixel_time is not None and 
+    #                 last_tdc_warning_time is None and 
+    #                 current_time - first_pixel_time > 10.0):
+    #                 logger.warning("⚠️  No matching TDC triggers received in 10s after first pixel")
+    #                 last_tdc_warning_time = current_time  # Prevent repeated warnings
+                
+    #             # Discard pixels before first TDC
+    #             if t_zero is None:
+    #                 pixels_before_trigger += 1
+    #                 continue
+                
+    #             # Calculate relative time in ticks
+    #             t_relative_ticks = packet.timestamp - t_zero
+                
+    #             # Check if within time window
+    #             if t_relative_ticks < 0 or t_relative_ticks >= t_cycle_ticks:
+    #                 pixels_outside_window += 1
+    #                 if verbose:
+    #                     t_relative_ps = t_relative_ticks * TIMESTAMP_PS_PER_TICK
+    #                     logger.warning(f"Pixel outside time window: t_relative={t_relative_ps:.1f} ps "
+    #                                  f"(window: 0 to {t_cycle} ps)")
+    #                 continue
+                
+    #             # Calculate time bin and update x, y, t accumulator
+    #             time_bin = int(t_relative_ticks / t_delta_ticks)
+
+    #             # Bounds check (shouldn't happen but be safe)
+    #             if 0 <= time_bin < n_bins:
+    #                 with xyt_lock:
+    #                     if collapse_y:
+    #                         xyt_array[packet.x, time_bin] += 1
+    #                     else:
+    #                         xyt_array[packet.x, packet.y, time_bin] += 1
                 
     # Set the callback
-    server.set_data_callback(data_callback)
+    server.set_data_callback(data_callback_np)
+    #server.set_data_callback(data_callback_vectorized)
+    #server.set_data_callback(data_callback)
 
     try:
         # Start the server
