@@ -215,7 +215,7 @@ class MainWindow(QMainWindow):
             
             if not self._process_manager.start_simulator(
                 tdc_frequency=params['tdc_frequency'],
-                cps=1000.0,
+                cps=10000.0,
                 duration=params['duration']
             ):
                 QMessageBox.warning(self, "Error", "Failed to start simulator")

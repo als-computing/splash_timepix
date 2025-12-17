@@ -211,7 +211,7 @@ class OperatorTab(QWidget):
         out_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         out_row.addWidget(out_label)
         self._output_input = QLineEdit()
-        self._output_input.setText(str(Path.home() / "data"))
+        self._output_input.setText(str(Path.home() / "Desktop" / "data"))
         self._output_input.setStyleSheet(theme.input_style())
         out_row.addWidget(self._output_input)
         self._browse_output_btn = QPushButton("…")

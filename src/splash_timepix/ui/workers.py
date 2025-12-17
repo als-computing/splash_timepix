@@ -342,7 +342,11 @@ class ProcessManager(QObject):
             logger.error(f"live-cli not found: {live_cli}")
             return False
         
+        # parameters default
         args = []
+        # parameters recommended by Henrique 2025-12-15
+        #args = ["--bin-width-exp", 0, "--max-delay-bins", 12]
+        
         if replay_file:
             args = ["--source-files", replay_file]
         
@@ -355,13 +359,11 @@ class ProcessManager(QObject):
     
     def start_acquisition(self, duration: int, output_dir: str, 
                           preview: bool = False) -> bool:
-        acq_script = self._project_root / "ASI" / "serval_client" / "acq.py"
         
-        if not acq_script.exists():
-            logger.error(f"acq.py not found: {acq_script}")
-            return False
-        
-        args = [str(acq_script), "-time", str(duration)]
+        args = [
+            "-m", "splash_timepix.serval_client.acq",
+            "-time", str(duration),
+        ]
         if preview:
             args.append("--preview")
         else:
@@ -371,7 +373,7 @@ class ProcessManager(QObject):
             name="acquisition",
             program="python",
             args=args,
-            working_dir=acq_script.parent
+            working_dir=self._project_root
         )
     
     def stop_process(self, name: str) -> None:
