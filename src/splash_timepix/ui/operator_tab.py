@@ -451,7 +451,7 @@ class OperatorTab(QWidget):
             avg_2d = np.sum(average, axis=1)
         
         # Save CSV
-        csv_path = output_path / f"{filename_base}.csv"
+        csv_path = output_path / f"{filename_base}_avg.csv"
         try:
             np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
             logger.info(f"Saved CSV: {csv_path}")
@@ -460,7 +460,7 @@ class OperatorTab(QWidget):
             csv_path = None
         
         # Save PNG
-        png_path = output_path / f"{filename_base}.png"
+        png_path = output_path / f"{filename_base}_avg.png"
         try:
             display_data = np.flipud(avg_2d.T.astype(np.float32))
             vmin, vmax = display_data.min(), display_data.max()
@@ -490,6 +490,7 @@ class OperatorTab(QWidget):
                 "avg_counts_per_cycle": float(np.sum(self._cumulative_sum) / self._total_cycles),
                 "array_shape": list(avg_2d.shape),
             }
+            
             if self._last_metadata:
                 meta["zmq_metadata"] = self._last_metadata
             

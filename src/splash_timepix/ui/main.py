@@ -305,18 +305,24 @@ class MainWindow(QMainWindow):
         # For acquisition, use the configured output dir
         if mode == "replay" and self._current_replay_file:
             output_dir = str(Path(self._current_replay_file).parent)
-            filename_base = Path(self._current_replay_file).stem + "_average"
+            filename_base = Path(self._current_replay_file).stem
         else:
             output_dir = self._current_output_dir
             if not output_dir:
                 output_dir = str(Path.home() / "Desktop")
                 self._engineering_tab.append_system_log(f"No output dir set, using {output_dir}")
             
-            frame_number = self._current_frame_number
-            if frame_number is not None:
-                filename_base = f"frame_{frame_number}_average"
+            # Find the newest/latest .tpx3 file in the output directory
+            output_path = Path(output_dir)
+            tpx3_files = list(output_path.glob("*.tpx3"))
+            
+            if tpx3_files:
+                newest_tpx3 = max(tpx3_files, key=lambda f: f.stat().st_mtime)
+                filename_base = newest_tpx3.stem
+                self._engineering_tab.append_system_log(f"Found newest tpx3: {newest_tpx3}")
             else:
-                filename_base = f"acquisition_average_{int(time.time())}"
+                self._engineering_tab.append_system_log(f"⚠️ No .tpx3 files found in output directory, skipping save")
+                return
         
         self._engineering_tab.append_system_log(f"Saving to {output_dir} as {filename_base}...")
         
@@ -395,62 +401,11 @@ class MainWindow(QMainWindow):
             return
         
         # Save average data for real acquisitions
-        cumulative_sum, total_cycles = self._operator_tab.get_cumulative_data()
-        
-        if cumulative_sum is not None and total_cycles > 0:
-            self._save_average_data(cumulative_sum, total_cycles)
-        
+        self._save_on_stop(mode)
+                
         self._status_bar.showMessage("Acquisition complete")
         self._engineering_tab.append_system_log("Acquisition complete")
-    
-    def _save_average_data(self, cumulative_sum: np.ndarray, total_cycles: int):
-        """Save the average heatmap as PNG and CSV."""
-        if not self._current_output_dir:
-            logger.warning("No output directory set, skipping save")
-            return
-        
-        output_dir = Path(self._current_output_dir)
-        
-        # Generate filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Calculate average per cycle
-        average = cumulative_sum / total_cycles
-        
-        # Sum over y for 2D heatmap (x, t)
-        avg_2d = np.sum(average, axis=1)
-        
-        # Save as CSV
-        csv_path = output_dir / f"average_{timestamp}.csv"
-        try:
-            np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
-            self._engineering_tab.append_system_log(f"Saved average to {csv_path}")
-            logger.info(f"Saved average CSV: {csv_path}")
-        except Exception as e:
-            logger.error(f"Error saving CSV: {e}")
-            self._engineering_tab.append_system_log(f"Error saving CSV: {e}")
-        
-        # Save as PNG
-        png_path = output_dir / f"average_{timestamp}.png"
-        try:
-            from .widgets import get_colormap, apply_colormap
-            from PySide6.QtGui import QImage
-            
-            # Apply colormap
-            cmap = get_colormap("viridis")
-            rgb = apply_colormap(avg_2d.T, cmap)  # Transpose for display
-            
-            # Save as image
-            h, w = rgb.shape[:2]
-            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-            qimg.save(str(png_path))
-            
-            self._engineering_tab.append_system_log(f"Saved average image to {png_path}")
-            logger.info(f"Saved average PNG: {png_path}")
-        except Exception as e:
-            logger.error(f"Error saving PNG: {e}")
-            self._engineering_tab.append_system_log(f"Error saving PNG: {e}")
-    
+       
     @Slot(object)
     def _on_flush_received(self, flush_data: FlushData):
         """Handle incoming flush from ZMQ worker."""

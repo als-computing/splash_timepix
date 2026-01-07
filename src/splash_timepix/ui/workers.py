@@ -96,7 +96,7 @@ class ZmqSubscriberWorker(QThread):
                     dtype = metadata['dtype']
                     array = np.frombuffer(array_bytes, dtype=dtype).reshape(shape)
                     
-                    flush_data = FlushData(array=array.copy(), metadata=metadata)
+                    flush_data = FlushData(array=array, metadata=metadata)
                     self.flush_received.emit(flush_data)
                     
                 except zmq.Again:
