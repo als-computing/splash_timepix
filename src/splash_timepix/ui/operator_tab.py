@@ -69,7 +69,7 @@ class OperatorTab(QWidget):
         self._start_btn.clicked.connect(lambda: self._on_mode_clicked("start"))
         mode_layout.addWidget(self._start_btn)
         
-        self._preview_btn = QPushButton("👁 Preview")
+        self._preview_btn = QPushButton("Preview")
         self._preview_btn.setFixedWidth(BUTTON_WIDTH)
         self._preview_btn.setStyleSheet(theme.button_style(theme.BUTTON_PREVIEW))
         self._preview_btn.clicked.connect(lambda: self._on_mode_clicked("preview"))
@@ -119,7 +119,7 @@ class OperatorTab(QWidget):
         
         view_layout.addSpacing(12)
         
-        self._reset_avg_btn = QPushButton("🔄 Reset Avg")
+        self._reset_avg_btn = QPushButton("Reset Avg")
         self._reset_avg_btn.setStyleSheet(theme.secondary_button_style())
         self._reset_avg_btn.clicked.connect(self._reset_average)
         view_layout.addWidget(self._reset_avg_btn)

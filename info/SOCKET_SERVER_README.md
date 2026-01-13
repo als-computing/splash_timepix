@@ -170,9 +170,9 @@ The following components are **thread-safe**:
 
 | Component | Thread-Safe? | Mechanism |
 |-----------|--------------|-----------|
-| `message_queue` | ✅ Yes | Built-in `queue.Queue` locks |
-| `callback_buffer` | ✅ Yes | Only accessed by data processor thread |
-| Callback execution | ⚠️ User responsibility | Runs on data processor thread |
+| `message_queue` | Yes | Built-in `queue.Queue` locks |
+| `callback_buffer` | Yes | Only accessed by data processor thread |
+| Callback execution | User responsibility | Runs on data processor thread |
 
 **For callback writers:** If your callback modifies shared state, you must use proper synchronization (locks, queues, etc.).
 

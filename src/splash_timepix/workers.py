@@ -48,11 +48,11 @@ def input_listener(server, reset_event, print_event, stop_event):
                 if cmd == "r":
                     reset_event.set()
                     os.system('clear')
-                    print("🧹 Resetting session stats...")
+                    print("Resetting session stats...")
                 elif cmd == "p":
                     print_event.set()
                     os.system('clear')
-                    print("🖨️  Printing timing settings...\n")
+                    print("Printing timing settings...\n")
         except EOFError:
             break
         except KeyboardInterrupt:
@@ -100,7 +100,7 @@ def plotting_worker(xyt_queue, stop_event):
                 # Unpack the format (array, metadata)
                 array_data, flush_metadata = xyt_queue.get(timeout=0.1)
                 
-                logger.info(f"📊 Plotting worker received array: shape={array_data.shape}, "
+                logger.info(f"Plotting worker received array: shape={array_data.shape}, "
                           f"total={np.sum(array_data)}, flush_meta={flush_metadata}")
                 
                 # Sum over y-axis: (x, y, t) -> (x, t)
@@ -117,7 +117,7 @@ def plotting_worker(xyt_queue, stop_event):
                 total_counts = np.sum(heatmap_data)
                 max_counts = np.max(heatmap_data)
                 
-                logger.info(f"📊 Heatmap stats: total={total_counts}, max={max_counts}")
+                logger.info(f"Heatmap stats: total={total_counts}, max={max_counts}")
                 
                 # Normalize to 0-255 for uint8 display
                 if max_counts > 0:
@@ -216,13 +216,15 @@ def plotting_worker(xyt_queue, stop_event):
 
 
 def zmq_worker(xyt_queue, stop_event, zmq_port: int = 5657, 
-               static_metadata: Optional[dict] = None):
-    """Worker thread that publishes accumulated 3D arrays via ZMQ PUB socket.
+               static_metadata: Optional[dict] = None,
+               message_queue: Optional[queue.Queue] = None):
+    """Worker thread that publishes accumulated 3D arrays and control messages via ZMQ PUB socket.
     
     Dequeues arrays of shape (x, y, t) from the processing queue and publishes
-    them using a ZMQ PUB socket with msgpack serialization.
+    them using a ZMQ PUB socket with msgpack serialization. Also publishes
+    start/stop control messages from the message_queue.
     
-    Message format (multi-part):
+    Data message format (multi-part):
         Part 1: Metadata (msgpack encoded dict)
             Static fields (from app.py configuration):
             - 'tdc_frequency_hz': TDC trigger frequency
@@ -247,16 +249,25 @@ def zmq_worker(xyt_queue, stop_event, zmq_port: int = 5657,
             
         Part 2: Array data (raw bytes)
     
+    Control message format (single-part):
+        Part 1: Message dict (msgpack encoded)
+            - 'msg_type': "start" or "stop"
+            - Other fields depend on message type (see schemas.py)
+    
     Subscribers can receive and reconstruct arrays using:
         metadata = msgpack.unpackb(msg[0])
         array_bytes = msg[1]
         array = np.frombuffer(array_bytes, dtype=metadata['dtype']).reshape(metadata['shape'])
+    
+    Subscribers can identify control messages by checking if msg_type is "start" or "stop"
+    in the metadata dict.
     
     Args:
         xyt_queue: Thread-safe queue containing (array, flush_metadata) tuples
         stop_event: Threading event to signal shutdown
         zmq_port: Port number for ZMQ PUB socket (default: 5657)
         static_metadata: Dict of static configuration parameters to include
+        message_queue: Optional queue for start/stop control messages (dict objects)
         
     Note:
         Uses non-blocking sends (DONTWAIT) to avoid blocking on slow subscribers.
@@ -278,17 +289,40 @@ def zmq_worker(xyt_queue, stop_event, zmq_port: int = 5657,
         socket.setsockopt(zmq.SNDHWM, 10)
         
         # Give subscribers time to connect (ZMQ slow joiner problem)
-        time.sleep(0.5)
+        # Note: Start messages sent before this sleep might be missed by late-connecting subscribers
+        time.sleep(1.0)  # Increased to 1 second to help with slow joiner problem
         
         flush_count = 0
         
         while not stop_event.is_set():
+            # First, check for control messages (start/stop) - higher priority
+            if message_queue is not None:
+                try:
+                    control_message = message_queue.get_nowait()
+                    # Control messages are single-part (just metadata)
+                    message_bytes = msgpack.packb(control_message)
+                    try:
+                        socket.send(message_bytes, zmq.DONTWAIT)
+                        msg_type = control_message.get('msg_type', 'unknown')
+                        logger.info(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")
+                        print(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")  # Also print to console
+                    except zmq.Again:
+                        logger.warning(f"ZMQ send would block, dropping {control_message.get('msg_type', 'control')} message")
+                        print(f"WARNING: ZMQ send would block, dropping {control_message.get('msg_type', 'control')} message")
+                    message_queue.task_done()
+                    continue  # Process control message, then continue loop
+                except queue.Empty:
+                    pass  # No control messages, continue to data processing
+            
             try:   
                 # Unpack array and per-flush metadata
                 array_data, flush_metadata = xyt_queue.get(timeout=1.0)
                 
                 # Build combined metadata
                 metadata = {}
+                
+                # Add message type for event messages
+                metadata['msg_type'] = 'event'
                 
                 # Add static metadata first
                 if static_metadata:
@@ -310,7 +344,7 @@ def zmq_worker(xyt_queue, stop_event, zmq_port: int = 5657,
                     socket.send(array_bytes, zmq.DONTWAIT)
                     
                     flush_num = flush_metadata.get('flush_number', '?')
-                    logger.info(f"📡 Published flush #{flush_num}: shape={array_data.shape}, "
+                    logger.info(f"Published flush #{flush_num}: shape={array_data.shape}, "
                               f"total_counts={np.sum(array_data)}, "
                               f"cycles={flush_metadata.get('cycles_in_flush', '?')}, "
                               f"size={len(array_bytes)/1024/1024:.2f} MB")

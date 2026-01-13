@@ -13,6 +13,8 @@ import math
 import numpy as np
 import threading
 import queue
+import uuid
+from datetime import datetime
 
 from splash_timepix.socket_server_np import SocketDataServer, RingBufferHandler
 #from splash_timepix.socket_server import SocketDataServer, RingBufferHandler
@@ -20,6 +22,7 @@ from splash_timepix.socket_server_np import SocketDataServer, RingBufferHandler
 from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.workers import input_listener, plotting_worker, zmq_worker
 from splash_timepix.heartbeat import HeartbeatPublisher, ServerState
+from splash_timepix.schemas import TimePixStart, TimePixStop
 
 import typer
 app = typer.Typer()
@@ -136,6 +139,16 @@ def main(host: str = "localhost",
     # Create processing queue
     xyt_queue = queue.Queue(maxsize=10)
     
+    # Create message queue for start/stop control messages (only used with ZMQ worker)
+    message_queue = queue.Queue(maxsize=10) if not plot else None
+    
+    # Generate unique scan name
+    # Generate initial scan_name (will be regenerated for each new client connection)
+    def generate_scan_name():
+        return f"acquisition_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    
+    scan_name = generate_scan_name()
+    
     # Define x, y, t accumulator array
     config = SimulatorConfig()
 
@@ -169,11 +182,11 @@ def main(host: str = "localhost",
     if plot:
         worker_function = plotting_worker
         worker_args = (xyt_queue, stop_event)
-        logger.info("🎨 Starting plotting worker")
+        logger.info("Starting plotting worker")
     else:
         worker_function = zmq_worker
-        worker_args = (xyt_queue, stop_event, zmq_port, static_metadata)
-        logger.info("📡 Starting ZMQ worker")
+        worker_args = (xyt_queue, stop_event, zmq_port, static_metadata, message_queue)
+        logger.info("Starting ZMQ worker")
     
     worker_thread = threading.Thread(
         target=worker_function, 
@@ -187,10 +200,10 @@ def main(host: str = "localhost",
     
     # Errors and warnings
     if tdc_frequency < 0.1:
-        logger.error(f"❌ Low TDC frequency ({tdc_frequency} Hz) → detector may miss TDC events")
+        logger.error(f"Low TDC frequency ({tdc_frequency} Hz) → detector may miss TDC events")
         return
     if flush_interval < (1.0 / tdc_frequency):
-        logger.warning(f"⚠️  Flush interval ({flush_interval}s) < TDC period ({1.0/tdc_frequency:.2f}s)")
+        logger.warning(f"Flush interval ({flush_interval}s) < TDC period ({1.0/tdc_frequency:.2f}s)")
         logger.warning(f"   Will flush every TDC cycle (flush_every_n_cycles = 1)")
 
     # Memory check
@@ -199,17 +212,17 @@ def main(host: str = "localhost",
     if array_size_gb > 1.0:
         suggested_bins = int(n_bins * 1.0 / array_size_gb)
         suggested_t_delta_ns = t_delta_ns * (n_bins / suggested_bins)
-        logger.warning(f"⚠️  Large array: {array_size_gb:.2f} GB")
-        logger.warning(f"💡 Suggestion: use --t-delta-ns {suggested_t_delta_ns:.1f} to reduce to ~1 GB")
+        logger.warning(f"Large array: {array_size_gb:.2f} GB")
+        logger.warning(f"Suggestion: use --t-delta-ns {suggested_t_delta_ns:.1f} to reduce to ~1 GB")
     elif array_size_gb > 5.0:
-        logger.error(f"❌ Array too large ({array_size_gb:.2f} GB)! Increase t_delta_ns or decrease TDC frequency")
+        logger.error(f"Array too large ({array_size_gb:.2f} GB)! Increase t_delta_ns or decrease TDC frequency")
         return
     
     # Log final configuration
-    logger.info(f"📊 TDC: {tdc_frequency} Hz → t_cycle = {t_cycle:.3e} ps ({t_cycle/1e12:.3f} s)")
-    logger.info(f"⏱️  Time bins: {n_bins} bins × {t_delta_ns} ns = {t_cycle/1e12:.3f} s total")
-    logger.info(f"💾 Array size: {array_size_gb:.3f} GB per flush")
-    logger.info(f"🔄 Flush: every {flush_every_n_cycles} cycles ({flush_interval} s)")
+    logger.info(f"TDC: {tdc_frequency} Hz → t_cycle = {t_cycle:.3e} ps ({t_cycle/1e12:.3f} s)")
+    logger.info(f"Time bins: {n_bins} bins × {t_delta_ns} ns = {t_cycle/1e12:.3f} s total")
+    logger.info(f"Array size: {array_size_gb:.3f} GB per flush")
+    logger.info(f"Flush: every {flush_every_n_cycles} cycles ({flush_interval} s)")
     
     # Monitor memory usage of the server
     process = psutil.Process(os.getpid())
@@ -227,6 +240,8 @@ def main(host: str = "localhost",
     pixels_outside_window = 0
     last_tdc_warning_time = None
     first_pixel_time = None
+    start_message_sent = False  # Track if start message has been sent
+    acquisition_start_time = None  # Track when acquisition actually started
     
     # Convert edge string to enum value
     target_edge = 0 if tdc_edge.lower() == "rising" else 1
@@ -253,8 +268,37 @@ def main(host: str = "localhost",
         nonlocal pixels_before_trigger, pixels_outside_window
         nonlocal last_tdc_warning_time, first_pixel_time
         nonlocal local_accumulator, xyt_array
+        nonlocal start_message_sent, acquisition_start_time
         
         current_time = time.time()
+        
+        # Send start message when first data arrives
+        if not start_message_sent and message_queue is not None:
+            acquisition_start_time = current_time
+            start_msg = TimePixStart(
+                scan_name=scan_name,
+                tdc_frequency_hz=tdc_frequency,
+                t_delta_ns=t_delta_ns,
+                t_cycle_ns=t_cycle / 1e3,
+                n_bins=n_bins,
+                detector_size_x=detector_size_x,
+                detector_size_y=detector_size_y,
+                flush_interval_s=flush_interval,
+                cycles_per_flush=max(1, int(flush_interval * tdc_frequency)),
+                tdc_channel=tdc_ch,
+                tdc_edge=tdc_edge,
+                collapse_y=collapse_y,
+                zmq_port=zmq_port,
+                tcp_port=port
+            )
+            try:
+                message_queue.put_nowait(start_msg.model_dump())
+                start_message_sent = True
+                logger.info(f"Queued start message for scan: {scan_name}")
+                print(f"Queued start message for scan: {scan_name}")  # Also print to console
+            except queue.Full:
+                logger.warning("Message queue full, dropping start message")
+                print("WARNING: Message queue full, dropping start message")
         
         # Early exit if nothing to process
         if result.n_pixels == 0 and result.n_tdc == 0:
@@ -295,7 +339,7 @@ def main(host: str = "localhost",
             # TDC timeout warning
             if (last_tdc_warning_time is None and 
                 current_time - first_pixel_time > 10.0):
-                logger.warning("⚠️  No matching TDC triggers received in 10s")
+                logger.warning("No matching TDC triggers received in 10s")
                 last_tdc_warning_time = current_time
             
             pixel_indices = result.pixel_indices
@@ -383,7 +427,7 @@ def main(host: str = "localhost",
                 
                 try:
                     xyt_queue.put_nowait((array_copy, flush_metadata))
-                    logger.info(f"🔄 Flushed: #{flush_count}, cycles={flush_every_n_cycles}")
+                    logger.info(f"Flushed: #{flush_count}, cycles={flush_every_n_cycles}")
                     pixels_before_trigger = 0
                     pixels_outside_window = 0
                 except queue.Full:
@@ -477,7 +521,7 @@ def main(host: str = "localhost",
                     
     #                 try:
     #                     xyt_queue.put_nowait((array_copy, flush_metadata))
-    #                     logger.info(f"🔄 Flushed: #{flush_count}, cycles={cycles_in_flush}")
+    #                     logger.info(f"Flushed: #{flush_count}, cycles={cycles_in_flush}")
     #                     pixels_before_trigger = 0
     #                     pixels_outside_window = 0
     #                 except queue.Full:
@@ -498,7 +542,7 @@ def main(host: str = "localhost",
     #     if (first_pixel_time is not None and 
     #         last_tdc_warning_time is None and 
     #         current_time - first_pixel_time > 10.0):
-    #         logger.warning("⚠️  No matching TDC triggers received in 10s")
+    #         logger.warning("No matching TDC triggers received in 10s")
     #         last_tdc_warning_time = current_time
         
     #     # No t_zero yet - count and discard all pixels
@@ -591,7 +635,7 @@ def main(host: str = "localhost",
                         
     #                     try:
     #                         xyt_queue.put_nowait((array_copy, flush_metadata))
-    #                         logger.info(f"🔄 Flushed x, y, t array: flush #{flush_count}, "
+    #                         logger.info(f"Flushed x, y, t array: flush #{flush_count}, "
     #                                   f"cycles={cycles_in_flush}, total_cycles={cycle_count}, "
     #                                   f"(discarded: {pixels_before_trigger} before trigger, "
     #                                   f"{pixels_outside_window} outside window)")
@@ -616,7 +660,7 @@ def main(host: str = "localhost",
     #             if (first_pixel_time is not None and 
     #                 last_tdc_warning_time is None and 
     #                 current_time - first_pixel_time > 10.0):
-    #                 logger.warning("⚠️  No matching TDC triggers received in 10s after first pixel")
+    #                 logger.warning("No matching TDC triggers received in 10s after first pixel")
     #                 last_tdc_warning_time = current_time  # Prevent repeated warnings
                 
     #             # Discard pixels before first TDC
@@ -654,15 +698,16 @@ def main(host: str = "localhost",
 
     try:
         # Start the server
-        print(f"🚀 Starting server on localhost:{port}")
+        print(f"Starting server on localhost:{port}")
         server.start()
 
         # Server is now ready for connections
         heartbeat.set_state(ServerState.READY)
 
-        # Wait so the console can be read
-        wait_after_start = 1
-        print(f"\n⏱️  Waiting for {wait_after_start} seconds...")
+        # Wait so the console can be read and give ZMQ subscribers time to connect
+        # This helps with the "slow joiner" problem where start messages might be missed
+        wait_after_start = 2
+        print(f"\nWaiting for {wait_after_start} seconds for subscribers to connect...")
         time.sleep(wait_after_start)
 
         # Keep the main thread alive and show overall stats
@@ -690,20 +735,83 @@ def main(host: str = "localhost",
 
         # Track client connection state for heartbeat updates
         was_client_connected = False
+        stop_message_sent_on_disconnect = False  # Track if we already sent stop on disconnect
 
         while server.running:
             # Check if we should exit due to client disconnect
             if exit_on_disconnect and server.client_disconnected_event.is_set():
                 logger.info("Client disconnected, initiating shutdown...")
+                # Send stop message before shutdown
+                if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
+                    stop_msg = TimePixStop(
+                        scan_name=scan_name,
+                        total_flushes=flush_count,
+                        total_cycles=cycle_count,
+                        total_packets=event_count,
+                        acquisition_duration_s=acquisition_duration,
+                        pixels_discarded_before_trigger=int(pixels_before_trigger),
+                        pixels_discarded_outside_window=int(pixels_outside_window)
+                    )
+                    try:
+                        message_queue.put_nowait(stop_msg.model_dump())
+                        logger.info(f"Queued stop message (client disconnect) for scan: {scan_name}")
+                        print(f"Queued stop message (client disconnect) for scan: {scan_name}")
+                        stop_message_sent_on_disconnect = True
+                        time.sleep(0.5)  # Give worker time to send
+                    except queue.Full:
+                        logger.warning("Message queue full, dropping stop message")
                 break
             
             # Update heartbeat state based on client connection
             if server.client_connected and not was_client_connected:
                 heartbeat.set_state(ServerState.STREAMING)
                 was_client_connected = True
+                # Reset stop message flag when new client connects
+                stop_message_sent_on_disconnect = False
+                # Reset acquisition state for new client connection (new acquisition)
+                start_message_sent = False
+                acquisition_start_time = None
+                scan_name = generate_scan_name()
+                # Reset counters for new acquisition
+                cycle_count = 0
+                flush_count = 0
+                event_count = 0
+                pixels_before_trigger = 0
+                pixels_outside_window = 0
+                t_zero = None
+                first_pixel_time = None
+                # Clear arrays for fresh start
+                with xyt_lock:
+                    xyt_array.fill(0)
+                local_accumulator.fill(0)
+                logger.info(f"New client connected - resetting acquisition state. New scan: {scan_name}")
+                print(f"New client connected - resetting acquisition state. New scan: {scan_name}")
             elif not server.client_connected and was_client_connected:
+                # Client just disconnected - send stop message
                 heartbeat.set_state(ServerState.READY)
                 was_client_connected = False
+                
+                # Send stop message when client disconnects (even without --exit-on-disconnect)
+                if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
+                    stop_msg = TimePixStop(
+                        scan_name=scan_name,
+                        total_flushes=flush_count,
+                        total_cycles=cycle_count,
+                        total_packets=event_count,
+                        acquisition_duration_s=acquisition_duration,
+                        pixels_discarded_before_trigger=int(pixels_before_trigger),
+                        pixels_discarded_outside_window=int(pixels_outside_window)
+                    )
+                    try:
+                        message_queue.put_nowait(stop_msg.model_dump())
+                        logger.info(f"Queued stop message (client disconnected) for scan: {scan_name}")
+                        print(f"Queued stop message (client disconnected) for scan: {scan_name}")
+                        stop_message_sent_on_disconnect = True
+                        time.sleep(0.5)  # Give worker time to send
+                    except queue.Full:
+                        logger.warning("Message queue full, dropping stop message")
             
             time.sleep(1)
             current_time = time.time()
@@ -728,10 +836,10 @@ def main(host: str = "localhost",
                 
                 # Check for timing print command
                 if print_event.is_set():
-                    print(f"📻 TDC channel: {tdc_ch} ({'both' if tdc_ch == 0 else f'ch{tdc_ch}'}) (edge: {tdc_edge})")
-                    print(f"〰 TDC frequency: {tdc_frequency:.3e} Hz (time cycle: {t_cycle/1e12:.3e} s)")
-                    print(f"↕️  Time bin width: {t_delta/1E12:.3e} s (# of bins: {n_bins:.3e})")
-                    print(f"📼 3D array (x,y,t): {array_size_gb:.3f} GB [{xyt_array.shape}]")
+                    print(f"TDC channel: {tdc_ch} ({'both' if tdc_ch == 0 else f'ch{tdc_ch}'}) (edge: {tdc_edge})")
+                    print(f"TDC frequency: {tdc_frequency:.3e} Hz (time cycle: {t_cycle/1e12:.3e} s)")
+                    print(f"Time bin width: {t_delta/1E12:.3e} s (# of bins: {n_bins:.3e})")
+                    print(f"3D array (x,y,t): {array_size_gb:.3f} GB [{xyt_array.shape}]")
                     print(f"                     (flushed every {flush_interval} s ({flush_every_n_cycles:.3e} cycles)")
                     print()
                     input("Press ENTER to continue...")
@@ -758,13 +866,13 @@ def main(host: str = "localhost",
                 # Build info string based on mode
                 if exit_on_disconnect:
                     info = (
-                        f"🔄 Running in orchestrated mode (will exit on client disconnect)\n"
+                        f"Running in orchestrated mode (will exit on client disconnect)\n"
                     )
                 else:
                     info = (
-                        f"🛑 Press Ctrl+C to stop the server\n"
-                        f"🔄 Type 'r' to reset session stats\n"
-                        f"⚙️  Type 'p' to print timing settings\n"
+                        f"Press Ctrl+C to stop the server\n"
+                        f"Type 'r' to reset session stats\n"
+                        f"Type 'p' to print timing settings\n"
                     )
                 
                 # Get stats
@@ -773,21 +881,21 @@ def main(host: str = "localhost",
                 xyt_queue_str = f"{xyt_queue_size} / {xyt_queue_max}"
                 
                 stats = (
-                    f"⏱️  Server uptime: {uptime:.0f}s\n"
-                    f"💾 Server memory: {current_mem:.3f} GB\n"
-                    f"📊 Total packets: {current_total_data_points:.3e}\n"
-                    f"📈 Overall rate: {rate_str} packets/s\n"
-                    f"⚠️  Unknown packets: {unknown_count}\n"
-                    f"📦 [queue] messages: {queue_size} / {server.buffer_size}\n"
-                    f"📝 [buffer] callback: {callback_buffer_size} / {callback_batch_size}\n"
-                    f"📊 [queue] x,y,t 3D: {xyt_queue_str}\n"
-                    f"🔄 Flushes: {flush_count} (cycles: {cycle_count})\n"
+                    f"Server uptime: {uptime:.0f}s\n"
+                    f"Server memory: {current_mem:.3f} GB\n"
+                    f"Total packets: {current_total_data_points:.3e}\n"
+                    f"Overall rate: {rate_str} packets/s\n"
+                    f"Unknown packets: {unknown_count}\n"
+                    f"[queue] messages: {queue_size} / {server.buffer_size}\n"
+                    f"[buffer] callback: {callback_buffer_size} / {callback_batch_size}\n"
+                    f"[queue] x,y,t 3D: {xyt_queue_str}\n"
+                    f"Flushes: {flush_count} (cycles: {cycle_count})\n"
                 )
                 
                 session_stats = (
-                    f"⏱️  Session duration: {session_duration:.3f}s\n"
-                    f"📊 Session packets: {session_packet_count:.3e}\n"
-                    f"📈 Session rate: {session_rate_str} packets/s\n"
+                    f"Session duration: {session_duration:.3f}s\n"
+                    f"Session packets: {session_packet_count:.3e}\n"
+                    f"Session rate: {session_rate_str} packets/s\n"
                 )
 
                 # Update last event time
@@ -812,7 +920,7 @@ def main(host: str = "localhost",
                     recent_errors = ring_handler.get_logs()
                     if recent_errors:
                         print()
-                        print(f"⚠️  Recent errors (last {len(recent_errors)}):\n")
+                        print(f"Recent errors (last {len(recent_errors)}):\n")
                         for err in recent_errors:
                             print(f"  {err}")
 
@@ -820,15 +928,37 @@ def main(host: str = "localhost",
                     valid_samples = server.get_valid_packet_samples()
                     if valid_samples:
                         print()
-                        print(f"✅ Recent valid packets (last {len(valid_samples)}):\n")
+                        print(f"Recent valid packets (last {len(valid_samples)}):\n")
                         for sample in valid_samples:
                             print(f"  {sample}")
 
 
     except KeyboardInterrupt:
-        print("\n🛑 Shutting down server...")
+        print("\nShutting down server...")
     
     finally:
+        # Send stop message (only if we haven't already sent it on client disconnect)
+        if message_queue is not None and not stop_message_sent_on_disconnect:
+            acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
+            stop_msg = TimePixStop(
+                scan_name=scan_name,
+                total_flushes=flush_count,
+                total_cycles=cycle_count,
+                total_packets=event_count,
+                acquisition_duration_s=acquisition_duration,
+                pixels_discarded_before_trigger=int(pixels_before_trigger),
+                pixels_discarded_outside_window=int(pixels_outside_window)
+            )
+            try:
+                message_queue.put_nowait(stop_msg.model_dump())
+                logger.info(f"Queued stop message for scan: {scan_name}")
+                print(f"Queued stop message for scan: {scan_name}")  # Also print to console
+                # Give worker time to send the stop message
+                time.sleep(0.5)  # Increased wait time
+            except queue.Full:
+                logger.warning("Message queue full, dropping stop message")
+                print("WARNING: Message queue full, dropping stop message")
+        
         # Signal all threads to stop
         stop_event.set()
         
@@ -852,7 +982,7 @@ def main(host: str = "localhost",
             if input_thread.is_alive():
                 logger.warning("Input listener did not finish in time")
         
-        print("✅ Server stopped successfully")
+        print("Server stopped successfully")
 
 
 if __name__ == "__main__":

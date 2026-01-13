@@ -35,12 +35,12 @@ class EngineeringTab(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
         
-        kill_all_btn = QPushButton("🛑 Kill All Processes")
+        kill_all_btn = QPushButton("Kill All Processes")
         kill_all_btn.setStyleSheet(theme.button_style(theme.BUTTON_STOP))
         kill_all_btn.clicked.connect(self.kill_all_requested.emit)
         toolbar.addWidget(kill_all_btn)
         
-        clear_btn = QPushButton("🧹 Clear Logs")
+        clear_btn = QPushButton("Clear Logs")
         clear_btn.setStyleSheet(theme.secondary_button_style())
         clear_btn.clicked.connect(self._clear_all_logs)
         toolbar.addWidget(clear_btn)

@@ -77,7 +77,7 @@ def main() -> None:
     # Set data destination based on mode
     if args.preview:
         # Preview mode: streaming only, no file writing
-        logging.info("📺 PREVIEW MODE: Streaming only, no file saving")
+        logging.info("PREVIEW MODE: Streaming only, no file saving")
         destination = {
             "Raw": [{"Base": "tcp://connect@localhost:7070", "QueueSize": 16384}],
         }

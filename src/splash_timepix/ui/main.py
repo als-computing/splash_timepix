@@ -75,12 +75,12 @@ class MainWindow(QMainWindow):
         self._operator_tab = OperatorTab()
         self._operator_tab.start_requested.connect(self._on_start_requested)
         self._operator_tab.stop_requested.connect(self._on_stop_requested)
-        self._tabs.addTab(self._operator_tab, "🎛 Operator")
+        self._tabs.addTab(self._operator_tab, "Operator")
         
         # Engineering tab
         self._engineering_tab = EngineeringTab()
         self._engineering_tab.kill_all_requested.connect(self._on_kill_all)
-        self._tabs.addTab(self._engineering_tab, "🔧 Engineering")
+        self._tabs.addTab(self._engineering_tab, "Engineering")
         
         layout.addWidget(self._tabs)
         
@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         if self._process_manager.start_serval():
             self._status_bar.showMessage("Starting Serval server...")
         else:
-            self._engineering_tab.append_system_log("⚠️ Failed to start Serval - check if JAR exists")
+            self._engineering_tab.append_system_log("WARNING: Failed to start Serval - check if JAR exists")
             QMessageBox.warning(
                 self, "Serval Error",
                 "Could not start Serval server. Check the Engineering tab for details."
@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
             self._continue_startup()
         elif self._ready_check_count > 60:  # 30 second timeout
             self._ready_check_timer.stop()
-            self._engineering_tab.append_system_log("⚠️ Timeout waiting for server ready")
+            self._engineering_tab.append_system_log("WARNING: Timeout waiting for server ready")
             QMessageBox.warning(self, "Timeout", "Streaming server did not become ready in time")
             self._process_manager.stop_process("streaming")
     
@@ -321,7 +321,7 @@ class MainWindow(QMainWindow):
                 filename_base = newest_tpx3.stem
                 self._engineering_tab.append_system_log(f"Found newest tpx3: {newest_tpx3}")
             else:
-                self._engineering_tab.append_system_log(f"⚠️ No .tpx3 files found in output directory, skipping save")
+                self._engineering_tab.append_system_log(f"WARNING: No .tpx3 files found in output directory, skipping save")
                 return
         
         self._engineering_tab.append_system_log(f"Saving to {output_dir} as {filename_base}...")
