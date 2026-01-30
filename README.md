@@ -192,7 +192,7 @@ Published when data acquisition begins (first data arrives):
 ```python
 {
     'msg_type': 'start',
-    'scan_name': 'acquisition_20250112_160536_8b850728',
+    'scan_name': 'acquisition_20250112T160536Z_8b850728',
     'tdc_frequency_hz': 10.0,
     'detector_size_x': 256,
     'detector_size_y': 256,
@@ -228,7 +228,7 @@ Published when data acquisition ends (client disconnects or server shuts down):
 ```python
 {
     'msg_type': 'stop',
-    'scan_name': 'acquisition_20250112_160536_8b850728',
+    'scan_name': 'acquisition_20250112T160536Z_8b850728',
     'total_flushes': 9,
     'total_cycles': 99,
     'total_packets': 50000,

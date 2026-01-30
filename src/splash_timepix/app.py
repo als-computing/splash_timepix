@@ -14,7 +14,7 @@ import numpy as np
 import threading
 import queue
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from splash_timepix.socket_server_np import SocketDataServer, RingBufferHandler
 #from splash_timepix.socket_server import SocketDataServer, RingBufferHandler
@@ -144,8 +144,9 @@ def main(host: str = "localhost",
     
     # Generate unique scan name
     # Generate initial scan_name (will be regenerated for each new client connection)
+    # UTC, ISO 8601 format (YYYYMMDDTHHMMSSZ) for unambiguous, sortable identifiers
     def generate_scan_name():
-        return f"acquisition_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        return f"acquisition_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     
     scan_name = generate_scan_name()
     

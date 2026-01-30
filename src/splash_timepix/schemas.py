@@ -23,7 +23,7 @@ class TimePixStart(BaseModel):
     Example JSON:
     {
         "msg_type": "start",
-        "scan_name": "acquisition_20250115_143022",
+        "scan_name": "acquisition_20250115T143022Z",
         "tdc_frequency_hz": 1000.0,
         "t_delta_ns": 10.0,
         "t_cycle_ns": 1000000.0,
@@ -66,7 +66,7 @@ class TimePixStop(BaseModel):
     Example JSON:
     {
         "msg_type": "stop",
-        "scan_name": "acquisition_20250115_143022",
+        "scan_name": "acquisition_20250115T143022Z",
         "total_flushes": 120,
         "total_cycles": 120000,
         "total_packets": 5000000,

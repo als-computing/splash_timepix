@@ -84,21 +84,37 @@ class ZmqSubscriberWorker(QThread):
             
             while self._running:
                 try:
+                    # Receive first part (always present)
                     metadata_bytes = socket.recv()
-                    array_bytes = socket.recv()
-                    
+                    metadata = msgpack.unpackb(metadata_bytes)
+                    msg_type = metadata.get('msg_type')
+
                     if not self._connected:
                         self._connected = True
                         self.connection_changed.emit(True)
-                    
-                    metadata = msgpack.unpackb(metadata_bytes)
+
+                    # Control messages (start/stop) are single-part; data (event) messages are multi-part
+                    is_data_message = (msg_type != 'start' and msg_type != 'stop')
+                    if not is_data_message:
+                        # Start or stop: no second part, skip to next message
+                        continue
+
+                    # Data message: receive second part (array bytes)
+                    socket.setsockopt(zmq.RCVTIMEO, 1000)
+                    try:
+                        array_bytes = socket.recv()
+                    except zmq.Again:
+                        logger.warning("Expected second part for data message but none received")
+                        continue
+                    finally:
+                        socket.setsockopt(zmq.RCVTIMEO, 1000)
+
                     shape = tuple(metadata['shape'])
                     dtype = metadata['dtype']
                     array = np.frombuffer(array_bytes, dtype=dtype).reshape(shape)
-                    
                     flush_data = FlushData(array=array, metadata=metadata)
                     self.flush_received.emit(flush_data)
-                    
+
                 except zmq.Again:
                     continue
                 except Exception as e:
