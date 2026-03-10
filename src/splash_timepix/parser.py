@@ -137,9 +137,9 @@ class PacketParser:
     def _parse_pixel(self, packet_type: int, timestamp: int, specific_data: int) -> PixelPacket:
         """Parse pixel-specific data"""
         reserved = specific_data & 0x3F  # bits 0-5
-        # x and y swapped compared to "Draft-format-for-live-data-processing-v2.pdf"
-        x = (specific_data >> 6) & 0x3FF  # bits 6-15
-        y = (specific_data >> 16) & 0x3FF  # bits 16-25
+        # Packet format: reserved(0-5) | y(6-15) | x(16-25) | tot(26-35)
+        y = (specific_data >> 6) & 0x3FF  # bits 6-15
+        x = (specific_data >> 16) & 0x3FF  # bits 16-25
         tot = (specific_data >> 26) & 0x3FF  # bits 26-35
 
         return PixelPacket(
