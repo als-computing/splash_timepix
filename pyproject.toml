@@ -50,13 +50,13 @@ package-dir = {"" = "src"}
 
 # Tool configurations
 [tool.black]
-line-length = 88
+line-length = 120
 target-version = ['py39']
 include = '\.pyi?$'
 
 [tool.isort]
 profile = "black"
-line_length = 88
+line_length = 120
 multi_line_output = 3
 include_trailing_comma = true
 force_grid_wrap = 0
@@ -81,12 +81,6 @@ markers = [
     "unit: marks tests as unit tests",
     "network: marks tests that require network access",
 ]
-
-[tool.flake8]
-max-line-length = 88
-extend-ignore = ["E203", "W503", "D"]
-max-complexity = 15
-exclude = ["src/_tests/"]
 
 [tool.pydocstyle]
 convention = "google"

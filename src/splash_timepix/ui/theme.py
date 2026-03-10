@@ -5,11 +5,11 @@
 # =============================================================================
 
 # Primary Blues (use in ~50% of UI chrome)
-BLUE_PRIMARY = "#006ba6"      # 50% - Main brand color
-BLUE_DARK = "#003859"         # 20% - Headers, emphasis
-BLUE_LIGHT_1 = "#00b5ec"      # 10% - Accents
-BLUE_LIGHT_2 = "#0085ca"      # 10% - Accents
-BLUE_LIGHT_3 = "#00587c"      # 10% - Accents
+BLUE_PRIMARY = "#006ba6"  # 50% - Main brand color
+BLUE_DARK = "#003859"  # 20% - Headers, emphasis
+BLUE_LIGHT_1 = "#00b5ec"  # 10% - Accents
+BLUE_LIGHT_2 = "#0085ca"  # 10% - Accents
+BLUE_LIGHT_3 = "#00587c"  # 10% - Accents
 
 # Greys (unlimited use)
 GREY_DARK = "#636669"
@@ -45,10 +45,10 @@ BUTTON_STOP = TERTIARY_RED
 BUTTON_SECONDARY = GREY_DARK
 
 # Backgrounds
-BG_DARK = "#1a1a2e"           # Darkest - terminal/heatmap backgrounds
-BG_PANEL = "#252536"          # Panel backgrounds
-BG_WIDGET = "#2d2d3d"         # Widget/card backgrounds
-BG_BUTTON_GROUP = "#3a3a4a"   # Grouped button container
+BG_DARK = "#1a1a2e"  # Darkest - terminal/heatmap backgrounds
+BG_PANEL = "#252536"  # Panel backgrounds
+BG_WIDGET = "#2d2d3d"  # Widget/card backgrounds
+BG_BUTTON_GROUP = "#3a3a4a"  # Grouped button container
 
 # Borders
 BORDER_DEFAULT = GREY_DARK
@@ -62,6 +62,7 @@ TEXT_MUTED = "#888888"
 # =============================================================================
 # Style Snippets
 # =============================================================================
+
 
 def button_style(bg_color: str, text_color: str = "white") -> str:
     """Generate consistent button stylesheet."""
@@ -88,6 +89,7 @@ def button_style(bg_color: str, text_color: str = "white") -> str:
         }}
     """
 
+
 def secondary_button_style() -> str:
     """Style for secondary/less prominent buttons."""
     return f"""
@@ -106,6 +108,7 @@ def secondary_button_style() -> str:
             background-color: {BG_PANEL};
         }}
     """
+
 
 def group_box_style() -> str:
     """Style for QGroupBox containers."""
@@ -126,6 +129,7 @@ def group_box_style() -> str:
         }}
     """
 
+
 def terminal_style() -> str:
     """Style for terminal/log output widgets."""
     return f"""
@@ -139,6 +143,7 @@ def terminal_style() -> str:
             border-radius: 0 0 4px 4px;
         }}
     """
+
 
 def input_style() -> str:
     """Style for input widgets (QLineEdit, QSpinBox, QComboBox)."""
@@ -154,6 +159,7 @@ def input_style() -> str:
             border-color: {BLUE_PRIMARY};
         }}
     """
+
 
 def heatmap_background_style() -> str:
     """Style for heatmap display area."""

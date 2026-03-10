@@ -41,7 +41,7 @@ def main():
             [sys.executable, str(stop_script)],
             cwd=stop_script.parent,
             capture_output=True,
-            text=True
+            text=True,
         )
 
         if result.stdout:
@@ -62,4 +62,3 @@ def main():
 
 if __name__ == "__main__":
     app()
-    

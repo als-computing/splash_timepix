@@ -42,7 +42,7 @@ from splash_timepix.parser import PixelPacket, TDCPacket
 def my_callback(packets):
     """
     Called when callback_batch_size packets have been buffered.
-    
+
     Args:
         packets: List of parsed packet objects (PixelPacket, TDCPacket, ControlPacket)
     """
@@ -91,7 +91,7 @@ def count_packets(packets):
     for packet in packets:
         if isinstance(packet, PixelPacket):
             packet_count += 1
-    
+
     if packet_count % 10000 == 0:
         print(f"Processed {packet_count} pixel events")
 

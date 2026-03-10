@@ -88,12 +88,12 @@ If you see start, multiple events, and stop in the ArroyoXPS terminal, the pipel
 
 This usually means the listener is running in the wrong environment or from the wrong directory.
 
-- **Use the ArroyoXPS conda environment:**  
-  `conda activate arroyoxps`  
+- **Use the ArroyoXPS conda environment:**
+  `conda activate arroyoxps`
   The `arroyopy` package (and correct `ZMQListener` signature) must be available in this env.
 
-- **Run from the ArroyoXPS project directory:**  
-  `cd /home/gabrielgazolla/Downloads/task/ArroyoXPS`  
+- **Run from the ArroyoXPS project directory:**
+  `cd /home/gabrielgazolla/Downloads/task/ArroyoXPS`
   Then run `python -m tr_ap_xps.timepix` so that `tr_ap_xps` and its config (e.g. ZMQ port) resolve correctly.
 
 - **Check ArroyoXPS code:** In `tr_ap_xps.timepix`, `XPSTimepixZMQListener` must call `super().__init__(operator, zmq_socket)` (operator first, socket second) to match `arroyopy.zmq.ZMQListener`. If you still see the error after fixing env/cd, verify that `__init__` passes arguments in that order.

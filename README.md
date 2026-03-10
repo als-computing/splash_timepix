@@ -117,7 +117,7 @@ splash_timepix --plot
 # Using real detector
 ./ASI/live-cli_alpha-1/live-cli
 # OR replaying from file
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
 # OR using the simulator
 python -m splash_timepix.simulator_cli
 ```
@@ -142,7 +142,7 @@ cps 100000
 tdc 0.1
 start 60
 # OR (III) Using Replay From File (live-cli)
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
 ```
 
 ## Command-Line Options
@@ -256,7 +256,7 @@ while True:
     metadata_bytes = socket.recv()
     metadata = msgpack.unpackb(metadata_bytes)
     msg_type = metadata.get('msg_type')
-    
+
     if msg_type == 'start':
         print(f"Acquisition started: {metadata['scan_name']}")
     elif msg_type == 'stop':

@@ -8,34 +8,33 @@ which can then be processed by an operator.
 """
 
 import logging
+
 import numpy as np
+
 from splash_timepix.listener import SplashTimePixZMQListener
-from splash_timepix.schemas import TimePixStart, TimePixStop, TimePixEvent
+from splash_timepix.schemas import TimePixEvent, TimePixStart, TimePixStop
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 class SimpleTimePixOperator:
     """
     Simple operator that processes TimePix messages.
-    
+
     Similar to XPSOperator in ArroyoXPS, but for TimePix3 data.
     """
-    
+
     def __init__(self):
         self.current_scan_name = None
         self.total_flushes = 0
         self.total_counts = 0
-    
+
     def process(self, message):
         """
         Process a message (TimePixStart, TimePixEvent, or TimePixStop).
-        
+
         Args:
             message: TimePixStart, TimePixEvent, or TimePixStop instance
         """
@@ -45,36 +44,36 @@ class SimpleTimePixOperator:
             self._handle_event(message)
         elif isinstance(message, TimePixStop):
             self._handle_stop(message)
-    
+
     def _handle_start(self, message: TimePixStart):
         """Handle start message - initialize processing."""
         self.current_scan_name = message.scan_name
         self.total_flushes = 0
         self.total_counts = 0
-        
+
         logger.info("=" * 60)
         logger.info(f"START: {message.scan_name}")
         logger.info(f"   TDC frequency: {message.tdc_frequency_hz} Hz")
         logger.info(f"   Detector: {message.detector_size_x} × {message.detector_size_y}")
         logger.info(f"   Time bins: {message.n_bins} × {message.t_delta_ns} ns")
         logger.info("=" * 60)
-    
+
     def _handle_event(self, message: TimePixEvent):
         """Handle event message - process data array."""
         self.total_flushes += 1
-        
+
         # Calculate statistics
         total_counts = np.sum(message.array)
         max_counts = np.max(message.array)
         self.total_counts += total_counts
-        
+
         logger.info(
             f"Flush #{message.flush_number}: "
             f"total_counts={total_counts}, "
             f"max={max_counts}, "
             f"cycles={message.cycles_in_flush}"
         )
-    
+
     def _handle_stop(self, message: TimePixStop):
         """Handle stop message - finalize processing."""
         logger.info("=" * 60)
@@ -90,16 +89,13 @@ def main():
     """Main function - create operator and listener."""
     # Create operator
     operator = SimpleTimePixOperator()
-    
+
     # Create listener with operator callback
-    listener = SplashTimePixZMQListener(
-        zmq_address="tcp://localhost:5657",
-        operator=operator.process
-    )
-    
+    listener = SplashTimePixZMQListener(zmq_address="tcp://localhost:5657", operator=operator.process)
+
     logger.info("Starting listener...")
     logger.info("Press Ctrl+C to stop")
-    
+
     try:
         # Start listening (blocks until stop() is called)
         listener.start()

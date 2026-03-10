@@ -1,12 +1,13 @@
 """
 Initialize, Load DACS, Configure DAQ, DAQ (wait until finished)
 """
+
 import argparse
 import logging
-from pathlib import Path
 import time
+from pathlib import Path
 
-from .lib import ServalError, ServalClient
+from .lib import ServalClient
 
 
 def main() -> None:
@@ -15,19 +16,19 @@ def main() -> None:
     parser.add_argument(
         "-time",
         type=int,
-        default=19008000, # longest possible acquisition 220 days
-        help="Acquisition duration in seconds (default: inf)"
+        default=19008000,  # longest possible acquisition 220 days
+        help="Acquisition duration in seconds (default: inf)",
     )
     parser.add_argument(
         "-output",
         type=str,
         default="/home/tpx/Desktop/tpxLOCAL/data",
-        help="Output directory for data files (default: /home/tpx/Desktop/tpx3LOCAL/data)"
+        help="Output directory for data files (default: /home/tpx/Desktop/tpx3LOCAL/data)",
     )
     parser.add_argument(
         "--preview",
         action="store_true",
-        help="Preview mode: stream only, no file writing"
+        help="Preview mode: stream only, no file writing",
     )
     args = parser.parse_args()
 
@@ -41,11 +42,9 @@ def main() -> None:
     TRIGGER_PERIOD = 1.0  # leave this at 1 second for continuous mode
     EXPOSURE_TIME = 1.0  # equal to trigger period for continuous mode
 
-    logging.basicConfig(
-        level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
-    client = ServalClient() # use default BASE_URL
+    client = ServalClient()  # use default BASE_URL
     client.check_connection()
     logging.debug("Connected to Serval")
 
@@ -54,9 +53,7 @@ def main() -> None:
 
     # Dashboard info
     dashboard = client.get_dashboard()
-    logging.info(
-        f"Server Software Version: {dashboard.get('Server', {}).get('SoftwareVersion')}"
-    )
+    logging.info(f"Server Software Version: {dashboard.get('Server', {}).get('SoftwareVersion')}")
 
     # Initialize camera
     client.load_configuration("pixelconfig", BPC_FILE)
@@ -111,4 +108,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
