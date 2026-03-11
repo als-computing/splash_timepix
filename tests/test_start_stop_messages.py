@@ -47,8 +47,8 @@ class TestStartStopMessages:
             stderr=subprocess.PIPE,
             cwd=Path(__file__).parent.parent,
         )
-        # Give server time to start up and bind ports
-        time.sleep(2.5)
+        # Give server time to start up, bind ports, and complete ZMQ slow joiner sleep
+        time.sleep(2.0)
         yield proc
         # Cleanup
         proc.terminate()
@@ -56,6 +56,20 @@ class TestStartStopMessages:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+    @pytest.fixture
+    def zmq_socket(self, server_process):
+        """Create ZMQ socket connected to server - must come BEFORE simulator starts."""
+        context = zmq.Context()
+        socket = context.socket(zmq.SUB)
+        socket.connect("tcp://localhost:5657")
+        socket.setsockopt(zmq.SUBSCRIBE, b"")
+        # Give subscription time to establish
+        time.sleep(0.3)
+        yield socket
+        # Cleanup
+        socket.close()
+        context.term()
 
     @pytest.fixture
     def simulator_process(self):
@@ -87,16 +101,9 @@ class TestStartStopMessages:
         except subprocess.TimeoutExpired:
             proc.kill()
 
-    def test_receive_start_message(self, server_process, simulator_process):
+    def test_receive_start_message(self, zmq_socket, simulator_process):
         """Test that start message is received."""
-        context = zmq.Context()
-        socket = context.socket(zmq.SUB)
-        socket.connect("tcp://localhost:5657")
-        socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.setsockopt(zmq.RCVTIMEO, -1)  # Infinite timeout for main loop
-        
-        # Small sleep to let subscription establish before simulator sends messages
-        time.sleep(0.5)
+        socket = zmq_socket
 
         # Wait for start message
         start_received = False
@@ -112,9 +119,9 @@ class TestStartStopMessages:
 
                 # Control messages are single-part, data messages are multi-part
                 is_data_message = msg_type != "start" and msg_type != "stop"
-                
+
                 if is_data_message:
-                    #Consume the array part to keep stream in sync
+                    # Consume the array part to keep stream in sync
                     socket.setsockopt(zmq.RCVTIMEO, 1000)
                     try:
                         socket.recv()  # Discard array data
@@ -137,21 +144,11 @@ class TestStartStopMessages:
                 print(f"Error receiving message: {e}")
                 raise
 
-        socket.close()
-        context.term()
-
         assert start_received, "Start message not received within timeout"
 
-    def test_receive_event_messages(self, server_process, simulator_process):
+    def test_receive_event_messages(self, zmq_socket, simulator_process):
         """Test that event messages are received."""
-        context = zmq.Context()
-        socket = context.socket(zmq.SUB)
-        socket.connect("tcp://localhost:5657")
-        socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.setsockopt(zmq.RCVTIMEO, -1)
-        
-        # Small sleep to let subscription establish
-        time.sleep(0.5)
+        socket = zmq_socket
 
         events_received = []
         timeout = time.time() + 10
@@ -202,23 +199,13 @@ class TestStartStopMessages:
             except zmq.Again:
                 continue
 
-        socket.close()
-        context.term()
-
         assert start_received, "Start message not received"
         assert len(events_received) >= 1, f"Expected at least 1 event, got {len(events_received)}"
         assert all(e["flush_number"] is not None for e in events_received), "Events missing flush_number"
 
-    def test_message_format(self, server_process, simulator_process):
+    def test_message_format(self, zmq_socket, simulator_process):
         """Test that messages have correct format."""
-        context = zmq.Context()
-        socket = context.socket(zmq.SUB)
-        socket.connect("tcp://localhost:5657")
-        socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.setsockopt(zmq.RCVTIMEO, -1)
-        
-        # Small sleep to let subscription establish
-        time.sleep(0.5)
+        socket = zmq_socket
 
         messages = []
         timeout = time.time() + 10
@@ -247,9 +234,6 @@ class TestStartStopMessages:
                         continue
             except zmq.Again:
                 continue
-
-        socket.close()
-        context.term()
 
         # Verify we got at least a start message
         start_msgs = [m for m in messages if m[0] == "start"]

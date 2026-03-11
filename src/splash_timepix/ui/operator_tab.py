@@ -60,15 +60,13 @@ class OperatorTab(QWidget):
 
         # Acquisition mode buttons grouped
         mode_group = QFrame()
-        mode_group.setStyleSheet(
-            f"""
+        mode_group.setStyleSheet(f"""
             QFrame {{
                 background-color: {theme.BG_BUTTON_GROUP};
                 border-radius: 6px;
                 border: 1px solid {theme.BLUE_LIGHT_2};
             }}
-        """
-        )
+        """)
         mode_layout = QHBoxLayout(mode_group)
         mode_layout.setContentsMargins(6, 6, 6, 6)
         mode_layout.setSpacing(6)
@@ -228,8 +226,7 @@ class OperatorTab(QWidget):
         out_row.addWidget(self._output_input)
         self._browse_output_btn = QPushButton("…")
         self._browse_output_btn.setFixedSize(32, 26)
-        self._browse_output_btn.setStyleSheet(
-            f"""
+        self._browse_output_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {theme.GREY_DARK};
                 color: {theme.TEXT_PRIMARY};
@@ -241,8 +238,7 @@ class OperatorTab(QWidget):
                 background-color: {theme.GREY_LIGHT};
                 color: {theme.BG_DARK};
             }}
-        """
-        )
+        """)
         self._browse_output_btn.clicked.connect(self._browse_output)
         out_row.addWidget(self._browse_output_btn)
         settings_layout.addLayout(out_row)

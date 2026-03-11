@@ -20,13 +20,13 @@ def tests(session):
 def lint(session):
     """Run linters: black, isort, and flake8."""
     session.install(".[dev]")
-    
+
     # Check code formatting with black
     session.run("black", "--check", *SOURCE_PATHS)
-    
+
     # Check import sorting with isort
     session.run("isort", "--check-only", *SOURCE_PATHS)
-    
+
     # Check code style with flake8
     session.run("flake8", *SOURCE_PATHS)
 
@@ -35,9 +35,9 @@ def lint(session):
 def format(session):
     """Format code with black and isort."""
     session.install(".[dev]")
-    
+
     # Format code with black
     session.run("black", *SOURCE_PATHS)
-    
+
     # Sort imports with isort
     session.run("isort", *SOURCE_PATHS)

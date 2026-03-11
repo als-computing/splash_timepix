@@ -260,10 +260,7 @@ def main(
         2. For each TDC (in order), bins all pixels between previous TDC and this one
         3. Then bins remaining pixels after the last TDC
         """
-        nonlocal event_count, t_zero, cycle_count, flush_count
-        nonlocal pixels_before_trigger, pixels_outside_window
         nonlocal last_tdc_warning_time, first_pixel_time
-        nonlocal local_accumulator, xyt_array
         nonlocal start_message_sent, acquisition_start_time
 
         current_time = time.time()
@@ -352,7 +349,6 @@ def main(
         def bin_pixels(mask):
             """Bin pixels selected by mask against current t_zero."""
             nonlocal pixels_before_trigger, pixels_outside_window, event_count
-            nonlocal local_accumulator
 
             n_selected = np.sum(mask)
             if n_selected == 0:
@@ -400,7 +396,7 @@ def main(
             nonlocal t_zero, cycle_count, flush_count
             nonlocal pixels_before_trigger, pixels_outside_window
             nonlocal last_tdc_warning_time
-            nonlocal xyt_array, local_accumulator
+            nonlocal xyt_array
 
             # Check if we need to flush
             if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
