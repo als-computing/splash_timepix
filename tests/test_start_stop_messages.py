@@ -47,8 +47,8 @@ class TestStartStopMessages:
             stderr=subprocess.PIPE,
             cwd=Path(__file__).parent.parent,
         )
-        # Give server time to start
-        time.sleep(2)
+        # Give server time to start up and bind ports
+        time.sleep(2.5)
         yield proc
         # Cleanup
         proc.terminate()
@@ -79,8 +79,6 @@ class TestStartStopMessages:
             stderr=subprocess.PIPE,
             cwd=Path(__file__).parent.parent,
         )
-        # Give simulator time to connect and send data
-        time.sleep(1)
         yield proc
         # Cleanup
         proc.terminate()
@@ -95,7 +93,10 @@ class TestStartStopMessages:
         socket = context.socket(zmq.SUB)
         socket.connect("tcp://localhost:5657")
         socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.setsockopt(zmq.RCVTIMEO, 10000)  # 10 second timeout
+        socket.setsockopt(zmq.RCVTIMEO, -1)  # Infinite timeout for main loop
+        
+        # Small sleep to let subscription establish before simulator sends messages
+        time.sleep(0.5)
 
         # Wait for start message
         start_received = False
@@ -103,8 +104,23 @@ class TestStartStopMessages:
 
         while time.time() < timeout:
             try:
+                # Set a shorter timeout for this specific recv
+                socket.setsockopt(zmq.RCVTIMEO, 5000)
                 metadata_bytes = socket.recv()
                 metadata = msgpack.unpackb(metadata_bytes)
+                msg_type = metadata.get("msg_type")
+
+                # Control messages are single-part, data messages are multi-part
+                is_data_message = msg_type != "start" and msg_type != "stop"
+                
+                if is_data_message:
+                    #Consume the array part to keep stream in sync
+                    socket.setsockopt(zmq.RCVTIMEO, 1000)
+                    try:
+                        socket.recv()  # Discard array data
+                    except zmq.Again:
+                        pass
+                    continue
 
                 if metadata.get("msg_type") == "start":
                     # Validate schema
@@ -117,6 +133,9 @@ class TestStartStopMessages:
                     break
             except zmq.Again:
                 continue
+            except Exception as e:
+                print(f"Error receiving message: {e}")
+                raise
 
         socket.close()
         context.term()
@@ -129,7 +148,10 @@ class TestStartStopMessages:
         socket = context.socket(zmq.SUB)
         socket.connect("tcp://localhost:5657")
         socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.setsockopt(zmq.RCVTIMEO, 10000)
+        socket.setsockopt(zmq.RCVTIMEO, -1)
+        
+        # Small sleep to let subscription establish
+        time.sleep(0.5)
 
         events_received = []
         timeout = time.time() + 10
@@ -137,21 +159,24 @@ class TestStartStopMessages:
 
         while time.time() < timeout:
             try:
+                socket.setsockopt(zmq.RCVTIMEO, 5000)
                 metadata_bytes = socket.recv()
                 metadata = msgpack.unpackb(metadata_bytes)
                 msg_type = metadata.get("msg_type")
+
+                # Control messages are single-part, data messages are multi-part
+                is_data_message = msg_type != "start" and msg_type != "stop"
 
                 if msg_type == "start":
                     start_received = True
                     continue
 
-                # Event messages (may not have msg_type in old format)
-                if msg_type == "event" or msg_type is None:
+                # Event messages - receive array data
+                if is_data_message:
                     # Try to receive array data
+                    socket.setsockopt(zmq.RCVTIMEO, 1000)
                     try:
-                        socket.setsockopt(zmq.RCVTIMEO, 1000)
                         array_bytes = socket.recv()
-                        socket.setsockopt(zmq.RCVTIMEO, 10000)
 
                         # Reconstruct array
                         shape = tuple(metadata["shape"])
@@ -190,27 +215,33 @@ class TestStartStopMessages:
         socket = context.socket(zmq.SUB)
         socket.connect("tcp://localhost:5657")
         socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.setsockopt(zmq.RCVTIMEO, 10000)
+        socket.setsockopt(zmq.RCVTIMEO, -1)
+        
+        # Small sleep to let subscription establish
+        time.sleep(0.5)
 
         messages = []
         timeout = time.time() + 10
 
         while time.time() < timeout and len(messages) < 5:
             try:
+                socket.setsockopt(zmq.RCVTIMEO, 5000)
                 metadata_bytes = socket.recv()
                 metadata = msgpack.unpackb(metadata_bytes)
                 msg_type = metadata.get("msg_type")
+
+                # Control messages are single-part, data messages are multi-part
+                is_data_message = msg_type != "start" and msg_type != "stop"
 
                 if msg_type == "start":
                     messages.append(("start", metadata))
                 elif msg_type == "stop":
                     messages.append(("stop", metadata))
-                elif msg_type == "event" or msg_type is None:
+                elif is_data_message:
                     # Try to get array
+                    socket.setsockopt(zmq.RCVTIMEO, 1000)
                     try:
-                        socket.setsockopt(zmq.RCVTIMEO, 1000)
                         array_bytes = socket.recv()
-                        socket.setsockopt(zmq.RCVTIMEO, 10000)
                         messages.append(("event", metadata, len(array_bytes)))
                     except zmq.Again:
                         continue
