@@ -30,6 +30,30 @@ from .workers import FlushData, HeartbeatStatus, ServalStatus
 logger = logging.getLogger(__name__)
 
 
+def _title_light_label(text: str) -> str:
+    """Title-case words for status text beside connection lights."""
+    if not text:
+        return ""
+    t = text.strip()
+    if t == "…":
+        return t
+    return t.replace("_", " ").title()
+
+
+def _serval_light_label(raw: Optional[str]) -> str:
+    """Map Serval measurement status to operator-facing labels."""
+    if not raw or not str(raw).strip():
+        return "Idle"
+    code = str(raw).strip().upper()
+    if code in ("DA_IDLE", "IDLE"):
+        return "Idle"
+    if code == "DA_RECORDING":
+        return "Acquiring"
+    if code.startswith("DA_"):
+        return code[3:].replace("_", " ").title()
+    return str(raw).replace("_", " ").title()
+
+
 class OperatorTab(QWidget):
     """Main operator interface tab."""
 
@@ -40,6 +64,9 @@ class OperatorTab(QWidget):
         super().__init__(parent)
 
         self._last_metadata: Optional[dict] = None
+        self._last_serval_status: Optional[ServalStatus] = None
+        self._serval_process_running = False
+        self._serval_hw_ready = False  # True after "Chip temps:" appears in Serval log
         self._acquiring = False
         self._cumulative_sum: Optional[np.ndarray] = None
         self._total_cycles = 0
@@ -155,6 +182,7 @@ class OperatorTab(QWidget):
         status_layout = QVBoxLayout(status_group)
 
         self._serval_status = StatusIndicator("Serval")
+        self._serval_status.set_run_state(False, "")
         self._stream_status = StatusIndicator("Stream")
         self._zmq_status = StatusIndicator("ZMQ Data")
 
@@ -411,9 +439,42 @@ class OperatorTab(QWidget):
             self._average_heatmap.set_data(avg_2d, avg_stats)
             self._update_flush_stats()
 
+    def _update_serval_indicator(self) -> None:
+        """Red when JVM down; blinking green until chip temps log; then steady green + Idle/status."""
+        if not self._serval_process_running:
+            self._serval_status.set_run_state(False, "")
+            return
+
+        if not self._serval_hw_ready:
+            if not self._serval_status.is_ok_blinking():
+                self._serval_status.start_ok_blink("Starting…")
+            return
+
+        st = self._last_serval_status
+        if st and st.connected:
+            detail = _serval_light_label(st.status)
+        else:
+            detail = "Idle"
+
+        self._serval_status.set_run_state(True, detail)
+
+    @Slot(bool)
+    def on_serval_process_running(self, running: bool) -> None:
+        self._serval_process_running = running
+        self._serval_hw_ready = False
+        self._update_serval_indicator()
+
+    def on_serval_chip_temps_line_seen(self) -> None:
+        """Called when Serval stdout contains the chip temperature line (startup complete)."""
+        if not self._serval_process_running or self._serval_hw_ready:
+            return
+        self._serval_hw_ready = True
+        self._update_serval_indicator()
+
     @Slot(object)
     def on_serval_status(self, status: ServalStatus):
-        self._serval_status.set_connected(status.connected, status.status if status.connected else "")
+        self._last_serval_status = status
+        self._update_serval_indicator()
         if status.connected:
             self._stats_labels["pixel_rate"].setText(f"{status.pixel_event_rate:.2e} cps")
             self._stats_labels["tdc1_rate"].setText(f"{status.tdc1_event_rate:.1f} Hz")
@@ -427,16 +488,19 @@ class OperatorTab(QWidget):
     def on_heartbeat_status(self, status: HeartbeatStatus):
         if status.connected:
             if status.state == "streaming":
-                self._stream_status.set_streaming()
-                self._stream_status._status_widget.setText("streaming")
+                self._stream_status.set_streaming_active(_title_light_label("streaming"))
             else:
-                self._stream_status.set_connected(True, status.state)
+                state_label = _title_light_label(status.state) if status.state else "…"
+                if not self._stream_status.is_ok_blinking():
+                    self._stream_status.start_ok_blink(state_label)
+                else:
+                    self._stream_status.set_status_detail(state_label)
         else:
             self._stream_status.set_connected(False, "")
 
     @Slot(bool)
     def on_zmq_connection_changed(self, connected: bool):
-        self._zmq_status.set_connected(connected, "receiving" if connected else "")
+        self._zmq_status.set_connected(connected, _title_light_label("receiving") if connected else "")
 
     def get_cumulative_data(self) -> tuple[Optional[np.ndarray], int]:
         return self._cumulative_sum, self._total_cycles

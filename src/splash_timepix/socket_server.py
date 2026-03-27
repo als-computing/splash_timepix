@@ -1,10 +1,8 @@
-"""Socket server that reads TimePix3 messages and processes them into data.
+"""TCP socket server for TimePix3 live data.
 
-This module implements a multi-threaded server that:
-1. Listens for incoming socket connections
-2. Reads 12-byte messages from data sources (TimePix3) on one thread
-3. Processes those messages into data on another thread.
-This data can be used for downstream UI and data analysis applications.
+Reads TCP streams, batches complete 12-byte packets, and parses with
+:class:`splash_timepix.parser.PacketParser`. The data callback receives
+:class:`~splash_timepix.parser.BatchParseResult` (NumPy arrays per packet type).
 """
 
 import logging
@@ -15,12 +13,9 @@ import time
 from collections import deque
 from typing import Callable, Optional
 
-import numpy as np
+from splash_timepix.parser import BatchParseResult, PacketParser
 
-from splash_timepix.parser import ControlPacket, PacketParser, PixelPacket, TDCPacket
-
-# Configure logging -> to console
-#                   -> to ring buffer displaying last N errors
+# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -33,24 +28,25 @@ class RingBufferHandler(logging.Handler):
         self.buffer = deque(maxlen=capacity)
 
     def emit(self, record):
-        # Format and store the log message
         msg = self.format(record)
         self.buffer.append(msg)
 
     def get_logs(self):
-        """Return all logs in the buffer as a list."""
         return list(self.buffer)
 
     def clear(self):
-        """Clear the buffer."""
         self.buffer.clear()
 
 
 class SocketDataServer:
     """
-    A multi-threaded server that reads 12-byte TimePix3 messages from a socket,
-    and averages all pixel events into one 2D image (numpy array) for now.
+    NumPy-accelerated multi-threaded server for TimePix3 data.
+
+    Key optimization: batches raw bytes and uses vectorized parsing,
+    passing NumPy arrays directly to callbacks.
     """
+
+    PACKET_SIZE = 12  # 96 bits = 12 bytes
 
     def __init__(
         self,
@@ -58,7 +54,7 @@ class SocketDataServer:
         port: int = 9090,
         buffer_size: int = 1000,
         debug: bool = False,
-        callback_batch_size: int = 1000,
+        callback_batch_size: int = 10000,
         exit_on_disconnect: bool = False,
     ):
         """
@@ -67,17 +63,19 @@ class SocketDataServer:
         Args:
             host: The host address to bind to
             port: The port to bind to
-            buffer_size: Maximum number of messages to buffer
-            debug: Enable debug logging and packet buffer
+            buffer_size: Maximum number of byte batches to buffer
+            debug: Enable debug logging and packet samples
             callback_batch_size: Number of packets to batch before callback
             exit_on_disconnect: If True, stop server when client disconnects
         """
         self.host = host
         self.port = port
         self.buffer_size = buffer_size
+        self.callback_batch_size = callback_batch_size
+        self.batch_byte_size = callback_batch_size * self.PACKET_SIZE
 
-        # Thread-safe queue for communication between threads
-        self.message_queue = queue.Queue(maxsize=buffer_size)
+        # Thread-safe queue for raw byte batches
+        self.message_queue: queue.Queue[bytes] = queue.Queue(maxsize=buffer_size)
 
         # Control flags
         self.running = False
@@ -87,39 +85,39 @@ class SocketDataServer:
 
         self.socket_thread: Optional[threading.Thread] = None
         self.processor_thread: Optional[threading.Thread] = None
-
-        # Socket
         self.server_socket: Optional[socket.socket] = None
 
-        # Parser instance
+        # NumPy parser instance
         self.parser = PacketParser()
 
-        # Debugging
+        # Debug/stats
         self.debug = debug
-        self.unknown_packet_count = 0  # count instances of unknown packet type
+        self.unknown_packet_count = 0
+        self.total_packets_parsed = 0
+
         if self.debug:
-            self.valid_packet_buffer = deque(maxlen=10)  # Keep last 10 valid packets
+            self.valid_packet_buffer = deque(maxlen=10)
         else:
             self.valid_packet_buffer = None
 
-        # Callback for when new data is processed
-        self.data_callback: Optional[Callable[[np.ndarray], None]] = None
+        # Callback receives BatchParseResult
+        self.data_callback: Optional[Callable[[BatchParseResult], None]] = None
 
-        # Callback batching
-        self.callback_batch_size = callback_batch_size
-        self.callback_buffer = []
+        # Byte accumulator for batching
+        self._byte_buffer = bytearray()
+        self._byte_buffer_lock = threading.Lock()
 
-    def set_data_callback(self, callback: Callable[[np.ndarray], None]) -> None:
+    def set_data_callback(self, callback: Callable[[BatchParseResult], None]) -> None:
         """
-        Set a callback function that will be called when new data is processed.
+        Set callback function called with BatchParseResult containing NumPy arrays.
 
         Args:
-            callback: Function that takes a numpy array as argument
+            callback: Function that takes BatchParseResult as argument
         """
         self.data_callback = callback
 
     def start(self) -> None:
-        """Start the server and both processing threads."""
+        """Start the server and processing threads."""
         if self.running:
             logger.warning("Server is already running")
             return
@@ -127,15 +125,37 @@ class SocketDataServer:
         self.running = True
         self.client_disconnected_event.clear()
 
-        # Start the socket listener thread
         self.socket_thread = threading.Thread(target=self._socket_listener, daemon=True)
         self.socket_thread.start()
 
-        # Start the data processor thread
         self.processor_thread = threading.Thread(target=self._data_processor, daemon=True)
         self.processor_thread.start()
 
         logger.info(f"Server started on {self.host}:{self.port}")
+
+    def _wakeup_listener_accept(self) -> None:
+        """Ensure ``accept()`` returns so the listener thread can exit.
+
+        On some platforms, closing the listening socket from another thread does not
+        interrupt ``accept()`` promptly; connecting to our own port always unblocks it.
+        """
+        addr = (self.host, self.port)
+        if self.host in ("0.0.0.0", ""):
+            addr = ("127.0.0.1", self.port)
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.1)
+                probe.connect(addr)
+                return
+            except OSError:
+                time.sleep(0.02)
+            finally:
+                try:
+                    probe.close()
+                except OSError:
+                    pass
 
     def stop(self) -> None:
         """Stop the server and all threads."""
@@ -145,65 +165,62 @@ class SocketDataServer:
 
         self.running = False
 
-        # Close the server socket
-        if self.server_socket:
-            self.server_socket.close()
+        # Unblock accept() before closing the listen socket (order matters on some OSes).
+        self._wakeup_listener_accept()
 
-        # Wait for threads to finish
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except OSError:
+                pass
+
         if self.socket_thread and self.socket_thread.is_alive():
-            self.socket_thread.join(timeout=5)
+            self.socket_thread.join(timeout=2)
 
         if self.processor_thread and self.processor_thread.is_alive():
-            self.processor_thread.join(timeout=5)
+            self.processor_thread.join(timeout=2)
 
         logger.info("Server stopped")
 
     def wait_for_client_disconnect(self, timeout: Optional[float] = None) -> bool:
-        """
-        Block until a client disconnects (useful for exit_on_disconnect mode).
-
-        Args:
-            timeout: Maximum time to wait in seconds, or None for indefinite
-
-        Returns:
-            True if client disconnected, False if timeout occurred
-        """
+        """Block until a client disconnects."""
         return self.client_disconnected_event.wait(timeout=timeout)
 
     def _socket_listener(self) -> None:
-        """
-        Thread function that listens for socket connections and reads messages.
-        """
+        """Thread that listens for connections and reads data."""
         try:
-            # Create and configure server socket
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            # Increase receive buffer for high throughput
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
 
-            logger.info(f"Listening for connections on {self.host}:{self.port}")
+            logger.info(f"Listening on {self.host}:{self.port}")
 
             while self.running:
                 try:
-                    # Accept client connection
                     client_socket, client_address = self.server_socket.accept()
                     logger.info(f"Client connected from {client_address}")
-                    self.client_connected = True
 
-                    # Handle this client in a separate method
+                    # Set client socket buffer size
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+
+                    self.client_connected = True
                     self._handle_client(client_socket)
 
-                    # Client has disconnected
                     self.client_connected = False
                     self.client_disconnected_event.set()
 
                     if self.exit_on_disconnect:
-                        logger.info("Client disconnected, shutting down (--exit-on-disconnect)")
+                        logger.info("Client disconnected, shutting down")
                         self.running = False
                         break
 
                 except socket.error as e:
-                    if self.running:  # Only log if we're still supposed to be running
+                    if self.running:
                         logger.error(f"Socket error: {e}")
                     break
 
@@ -215,154 +232,197 @@ class SocketDataServer:
 
     def _handle_client(self, client_socket: socket.socket) -> None:
         """
-        Handle a single client connection, reading messages.
+        Handle client connection with optimized batched reading.
 
-        Args:
-            client_socket: The client socket to read from
+        Reads large chunks and batches them for efficient processing.
+        Includes timeout-based flushing for low count rates.
         """
+        # Read buffer size (read up to 64KB at once)
+        READ_SIZE = 65536
+
+        # Timeout for partial batch flush (seconds)
+        FLUSH_TIMEOUT = 0.1
+
+        # Local byte accumulator
+        byte_buffer = bytearray()
+        last_flush_time = time.time()
+
+        # Set socket timeout for non-blocking reads
+        client_socket.settimeout(FLUSH_TIMEOUT)
+
         try:
             while self.running:
-                # Read exactly 12 bytes
-                data = b""
-                while len(data) < 12:
-                    chunk = client_socket.recv(12 - len(data))
+                # Read a chunk of data
+                try:
+                    chunk = client_socket.recv(READ_SIZE)
                     if not chunk:
                         logger.info("Client disconnected")
-                        return
-                    data += chunk
+                        break
 
-                # Add the 12-byte message to the queue
+                    byte_buffer.extend(chunk)
+
+                    # When we have enough for a batch, queue it
+                    while len(byte_buffer) >= self.batch_byte_size:
+                        batch = bytes(byte_buffer[: self.batch_byte_size])
+                        del byte_buffer[: self.batch_byte_size]
+
+                        try:
+                            self.message_queue.put(batch, timeout=1.0)
+                            last_flush_time = time.time()
+                        except queue.Full:
+                            logger.warning("Message queue full, dropping batch")
+
+                except socket.timeout:
+                    # No data received - check if we should flush partial batch
+                    pass
+                except socket.error as e:
+                    logger.error(f"Socket read error: {e}")
+                    break
+
+                # Flush partial batch if timeout exceeded and we have complete packets
+                current_time = time.time()
+                if current_time - last_flush_time >= FLUSH_TIMEOUT:
+                    complete_packets = len(byte_buffer) // self.PACKET_SIZE
+                    if complete_packets > 0:
+                        flush_bytes = complete_packets * self.PACKET_SIZE
+                        batch = bytes(byte_buffer[:flush_bytes])
+                        del byte_buffer[:flush_bytes]
+
+                        try:
+                            self.message_queue.put(batch, timeout=1.0)
+                            last_flush_time = current_time
+                        except queue.Full:
+                            logger.warning("Message queue full, dropping partial batch")
+
+            # Flush remaining bytes on disconnect (if any complete packets)
+            remaining_packets = len(byte_buffer) // self.PACKET_SIZE
+            if remaining_packets > 0:
+                final_bytes = remaining_packets * self.PACKET_SIZE
                 try:
-                    self.message_queue.put(data, timeout=1.0)
-                    logger.debug(f"Received 12-byte message: {data.hex()}")
+                    self.message_queue.put(bytes(byte_buffer[:final_bytes]), timeout=1.0)
                 except queue.Full:
-                    logger.warning("Message queue is full, dropping message")
+                    logger.warning("Could not flush final batch")
 
-        except socket.error as e:
+        except Exception as e:
             logger.error(f"Error handling client: {e}")
         finally:
             client_socket.close()
 
     def _data_processor(self) -> None:
         """
-        Thread function that processes messages from the queue into numpy arrays.
+        Thread that processes byte batches using vectorized parsing.
+
+        Receives raw bytes, parses with NumPy, calls callback with arrays.
         """
-        logger.info("Data processor thread started")
+        logger.info("Data processor thread started (NumPy accelerated)")
+
         while self.running or not self.message_queue.empty():
             try:
-                # Get a message from the queue (with timeout to allow graceful shutdown)
-                message = self.message_queue.get(timeout=1.0)
-                # Parse the packet directly
-                packet = self.parser.parse(message)
+                # Short timeout so stop() does not wait ~1s when the queue is idle.
+                batch_bytes = self.message_queue.get(timeout=0.1)
 
-                # Add Pixel/ TDC/ Control packets to callback buffer in batches
-                if isinstance(packet, PixelPacket):
-                    if self.data_callback:
-                        self.callback_buffer.append(packet)
-                        if len(self.callback_buffer) >= self.callback_batch_size:
-                            self.data_callback(self.callback_buffer[:])
-                            self.callback_buffer.clear()
+                # Parse entire batch at once with NumPy
+                result = self.parser.parse_batch(batch_bytes)
 
-                    if self.debug:
-                        logger.debug(f"Received Pixel packet: x={packet.x}, y={packet.y}")
-                        if self.valid_packet_buffer is not None:
-                            self.valid_packet_buffer.append(f"Pixel: x={packet.x}, y={packet.y}, raw={message.hex()}")
+                # Update stats
+                self.total_packets_parsed += result.n_pixels + result.n_tdc + result.n_control
+                self.unknown_packet_count += result.n_unknown
 
-                elif isinstance(packet, TDCPacket):
-                    if self.data_callback:
-                        self.callback_buffer.append(packet)
-                        if len(self.callback_buffer) >= self.callback_batch_size:
-                            self.data_callback(self.callback_buffer[:])
-                            self.callback_buffer.clear()
-                    if self.debug:
-                        logger.debug(f"Received TDC packet: {packet}")
-                        if self.valid_packet_buffer is not None:
-                            self.valid_packet_buffer.append(
-                                f"TDC: ch={packet.channel}, edge={packet.edge}, raw={message.hex()}"
-                            )
+                # Debug logging
+                if self.debug and self.valid_packet_buffer is not None:
+                    if result.n_pixels > 0:
+                        self.valid_packet_buffer.append(
+                            f"Pixel batch: {result.n_pixels} pixels, " f"x=[{result.pixel_x[0]}..{result.pixel_x[-1]}]"
+                        )
+                    if result.n_tdc > 0:
+                        self.valid_packet_buffer.append(
+                            f"TDC batch: {result.n_tdc} TDCs, " f"ch={result.tdc_channel[:3]}..."
+                        )
 
-                elif isinstance(packet, ControlPacket):
-                    if self.data_callback:
-                        self.callback_buffer.append(packet)
-                        if len(self.callback_buffer) >= self.callback_batch_size:
-                            self.data_callback(self.callback_buffer[:])
-                            self.callback_buffer.clear()
-                    if self.debug:
-                        logger.debug(f"Received Control packet: {packet}")
-                        if self.valid_packet_buffer is not None:
-                            self.valid_packet_buffer.append(f"Control: {packet}, raw={message.hex()}")
+                # Call callback with BatchParseResult
+                if self.data_callback:
+                    self.data_callback(result)
 
-                else:
-                    logger.warning(f"Unknown packet type: {type(packet)}, raw data: {message.hex()}")
-                    self.unknown_packet_count += 1
-
-                # Mark task as done
                 self.message_queue.task_done()
 
             except queue.Empty:
-                # Timeout occurred, flush any pending callbacks during idle
-                if self.data_callback and self.callback_buffer:
-                    self.data_callback(self.callback_buffer[:])
-                    self.callback_buffer.clear()
                 continue
             except Exception as e:
-                logger.error(f"Error processing message: {e}")
-
-        # Flush any remaining buffered callbacks before exit
-        if self.data_callback and self.callback_buffer:
-            self.data_callback(self.callback_buffer[:])
-            self.callback_buffer.clear()
+                logger.error(f"Error processing batch: {e}", exc_info=True)
 
         logger.info("Data processor thread finished")
 
     def get_queue_size(self) -> int:
-        """Get the current size of the message queue."""
+        """Get current message queue size."""
         return self.message_queue.qsize()
 
     def get_callback_buffer_size(self) -> int:
-        """Get the current size of the callback buffer."""
-        return len(self.callback_buffer)
+        """Get pending bytes (compatibility - returns 0 since we batch differently)."""
+        return 0
 
     def get_unknown_packet_count(self) -> int:
-        """Get the count of unknown packet types received."""
+        """Get count of unknown packet types."""
         return self.unknown_packet_count
 
     def get_valid_packet_samples(self) -> list:
-        """Get samples of recently received valid packets."""
+        """Get samples of recently processed batches."""
         if self.valid_packet_buffer is not None:
             return list(self.valid_packet_buffer)
         return []
 
 
-def main():
-    """
-    Example usage of the SocketDataServer.
-    """
-    # Create server
-    server = SocketDataServer(host="localhost", port=9090, buffer_size=1000)
+# =============================================================================
+# EXAMPLE / TEST
+# =============================================================================
 
-    # Set up a callback to print new data
-    def data_callback(new_data):
-        print(f"New data received: {new_data}")
+
+def main():
+    """Example usage of the NumPy-accelerated SocketDataServer."""
+    import os
+
+    import psutil
+
+    server = SocketDataServer(
+        host="localhost",
+        port=9090,
+        buffer_size=100,
+        callback_batch_size=10000,
+        debug=True,
+    )
+
+    # Stats
+    total_pixels = 0
+    total_tdcs = 0
+    start_time = time.time()
+
+    def data_callback(result: BatchParseResult):
+        nonlocal total_pixels, total_tdcs
+        total_pixels += result.n_pixels
+        total_tdcs += result.n_tdc
+
+        if result.n_pixels > 0:
+            logger.debug(f"Received {result.n_pixels} pixels, {result.n_tdc} TDCs")
 
     server.set_data_callback(data_callback)
 
     try:
-        # Start the server
         server.start()
+        process = psutil.Process(os.getpid())
 
-        # Keep the main thread alive
         while True:
-            time.sleep(1)
+            time.sleep(2)
+            elapsed = time.time() - start_time
+            rate = total_pixels / elapsed if elapsed > 0 else 0
+            mem = process.memory_info().rss / 1024**3
 
-            # Print/update stats every 10 seconds
-            if int(time.time()) % 10 == 0:
-                data = server.get_data_array()
-                queue_size = server.get_queue_size()
-                print(f"Total counts (pixel events): {np.sum(data)}, Queue size: {queue_size}")
+            print(
+                f"Pixels: {total_pixels:.2e}, TDCs: {total_tdcs}, "
+                f"Rate: {rate:.2e}/s, Mem: {mem:.2f} GB, "
+                f"Queue: {server.get_queue_size()}"
+            )
 
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        print("\nShutting down...")
         server.stop()
 
 

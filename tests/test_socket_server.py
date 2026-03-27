@@ -1,7 +1,8 @@
-"""Integration tests for the SocketDataServer.
+"""Tests for ``SocketDataServer`` TCP ingest and batch parsing.
 
-Tests the multi-threaded socket server that receives and parses
-TimePix3 packets using realistic simulator data.
+These focus on the packet path that feeds ``splash_timepix.app`` (live-cli → TCP →
+parser → callback). For the full UI-style pipeline (ZMQ + heartbeat + disconnect),
+see ``test_main_workflow.py`` and ``test_start_stop_messages.py``.
 """
 
 import socket
@@ -10,55 +11,13 @@ import time
 
 import pytest
 
-from splash_timepix.parser import PixelPacket, TDCPacket
+from splash_timepix.parser import BatchParseResult
 from splash_timepix.simulator import PacketSimulator, SimulatorConfig
 from splash_timepix.socket_server import SocketDataServer
 
 
-def get_free_port():
-    """Get a free port from the OS."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.listen(1)
-        port = s.getsockname()[1]
-    return port
-
-
-@pytest.fixture
-def test_port():
-    """Get a free port for each test."""
-    return get_free_port()
-
-
-@pytest.fixture
-def server(test_port):
-    """Create a server instance for testing."""
-    srv = SocketDataServer(
-        host="localhost",
-        port=test_port,
-        buffer_size=100,
-        debug=False,
-        callback_batch_size=10,  # Small batch for faster testing
-    )
-    yield srv
-
-    # Cleanup
-    if srv.running:
-        srv.stop()
-
-    # Give OS time to release the port
-    time.sleep(0.2)
-
-
-@pytest.fixture
-def simulator():
-    """Create a simulator with test-friendly settings."""
-    config = SimulatorConfig(
-        pixel_count_rate=1000,  # 1 kHz
-        tdc_frequency=10.0,  # 10 Hz
-        include_control_packets=False,
-    )
-    return PacketSimulator(config)
+def _batch_total_packets(r: BatchParseResult) -> int:
+    return r.n_pixels + r.n_tdc + r.n_control
 
 
 class TestServerLifecycle:
@@ -105,13 +64,14 @@ class TestPacketReception:
 
     def test_receive_single_pixel_packet(self, server, test_port, simulator):
         """Test receiving a single pixel packet."""
-        received_packets = []
+        received: list[BatchParseResult] = []
 
-        def callback(packets):
-            received_packets.extend(packets)
+        def callback(result: BatchParseResult):
+            received.append(result)
 
         server.set_data_callback(callback)
-        server.callback_batch_size = 1  # Flush immediately for this test
+        server.callback_batch_size = 1  # Flush one packet per raw batch when possible
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
         server.start()
         time.sleep(0.1)
 
@@ -126,9 +86,7 @@ class TestPacketReception:
             # Wait for processing
             time.sleep(0.3)
 
-            # Should have received the packet
-            assert len(received_packets) >= 1
-            assert isinstance(received_packets[0], PixelPacket)
+            assert sum(r.n_pixels for r in received) >= 1
 
         finally:
             client.close()
@@ -136,10 +94,10 @@ class TestPacketReception:
 
     def test_receive_multiple_packets(self, server, test_port, simulator):
         """Test receiving multiple packets in sequence."""
-        received_packets = []
+        received: list[BatchParseResult] = []
 
-        def callback(packets):
-            received_packets.extend(packets)
+        def callback(result: BatchParseResult):
+            received.append(result)
 
         server.set_data_callback(callback)
         server.start()
@@ -157,9 +115,8 @@ class TestPacketReception:
             # Wait for processing
             time.sleep(0.3)
 
-            # Should have received all packets
-            assert len(received_packets) >= 20
-            assert all(isinstance(p, PixelPacket) for p in received_packets)
+            total_pixels = sum(r.n_pixels for r in received)
+            assert total_pixels >= 20
 
         finally:
             client.close()
@@ -167,13 +124,14 @@ class TestPacketReception:
 
     def test_receive_mixed_packet_types(self, server, test_port, simulator):
         """Test receiving different packet types."""
-        received_packets = []
+        received: list[BatchParseResult] = []
 
-        def callback(packets):
-            received_packets.extend(packets)
+        def callback(result: BatchParseResult):
+            received.append(result)
 
         server.set_data_callback(callback)
-        server.callback_batch_size = 1  # Flush immediately
+        server.callback_batch_size = 1
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
         server.start()
         time.sleep(0.1)
 
@@ -194,10 +152,8 @@ class TestPacketReception:
             # Wait for processing
             time.sleep(0.5)
 
-            # Should have all packet types
-            packet_types = [type(p) for p in received_packets]
-            assert PixelPacket in packet_types
-            assert TDCPacket in packet_types
+            assert any(r.n_pixels > 0 for r in received)
+            assert any(r.n_tdc > 0 for r in received)
 
         finally:
             client.close()
@@ -205,10 +161,10 @@ class TestPacketReception:
 
     def test_receive_stream_from_simulator(self, server, test_port):
         """Test receiving a realistic packet stream."""
-        received_packets = []
+        received: list[BatchParseResult] = []
 
-        def callback(packets):
-            received_packets.extend(packets)
+        def callback(result: BatchParseResult):
+            received.append(result)
 
         server.set_data_callback(callback)
         server.start()
@@ -236,12 +192,11 @@ class TestPacketReception:
         # Wait for processing
         time.sleep(0.3)
 
-        # Should have received many packets
-        assert len(received_packets) > 100
+        total_packets = sum(_batch_total_packets(r) for r in received)
+        assert total_packets > 100
 
-        # Should have both pixel and TDC packets
-        pixel_count = sum(1 for p in received_packets if isinstance(p, PixelPacket))
-        tdc_count = sum(1 for p in received_packets if isinstance(p, TDCPacket))
+        pixel_count = sum(r.n_pixels for r in received)
+        tdc_count = sum(r.n_tdc for r in received)
 
         assert pixel_count > 0
         assert tdc_count > 0
@@ -254,13 +209,14 @@ class TestCallbackBatching:
 
     def test_callback_batching(self, server, test_port, simulator):
         """Test that callbacks are batched correctly."""
-        callback_invocations = []
+        callback_invocations: list[int] = []
 
-        def callback(packets):
-            callback_invocations.append(len(packets))
+        def callback(result: BatchParseResult):
+            callback_invocations.append(_batch_total_packets(result))
 
         server.set_data_callback(callback)
-        server.callback_batch_size = 5  # Batch every 5 packets
+        server.callback_batch_size = 5  # Raw batches of 5 packets (60 bytes)
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
         server.start()
         time.sleep(0.1)
 
@@ -276,7 +232,6 @@ class TestCallbackBatching:
             # Wait for processing
             time.sleep(0.3)
 
-            # Should have at least 2 callback invocations with batch size 5
             assert len(callback_invocations) >= 2
             assert any(batch_size == 5 for batch_size in callback_invocations)
 
@@ -285,14 +240,15 @@ class TestCallbackBatching:
             server.stop()
 
     def test_callback_timeout_flush(self, server, test_port, simulator):
-        """Test that partial batches flush on timeout."""
-        callback_invocations = []
+        """Test that partial batches flush on read timeout."""
+        callback_invocations: list[int] = []
 
-        def callback(packets):
-            callback_invocations.append(len(packets))
+        def callback(result: BatchParseResult):
+            callback_invocations.append(_batch_total_packets(result))
 
         server.set_data_callback(callback)
-        server.callback_batch_size = 100  # Large batch that won't fill
+        server.callback_batch_size = 100  # Large batch that won't fill from 5 packets
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
         server.start()
         time.sleep(0.1)
 
@@ -300,17 +256,16 @@ class TestCallbackBatching:
         try:
             client.connect(("localhost", test_port))
 
-            # Send only 5 packets (less than batch size)
+            # Send only 5 packets (less than batch byte threshold)
             for _ in range(5):
                 packet_bytes = simulator.generate_pixel_event()
                 client.sendall(packet_bytes)
 
-            # Wait for timeout flush (1 second timeout in processor)
-            time.sleep(1.5)
+            # Partial batches flush after ~0.1s idle in the reader
+            time.sleep(0.5)
 
-            # Should have flushed the partial batch
             assert len(callback_invocations) >= 1
-            assert sum(callback_invocations) == 5  # Total packets received
+            assert sum(callback_invocations) == 5
 
         finally:
             client.close()
@@ -336,7 +291,7 @@ class TestQueueManagement:
         server.stop()
 
     def test_callback_buffer_size_reporting(self, server):
-        """Test that callback buffer size can be queried."""
+        """Test that callback buffer size can be queried (np server always reports 0)."""
         initial_size = server.get_callback_buffer_size()
         assert initial_size == 0
 
@@ -345,7 +300,7 @@ class TestQueueManagement:
 
         size = server.get_callback_buffer_size()
         assert isinstance(size, int)
-        assert size >= 0
+        assert size == 0
 
         server.stop()
 
@@ -393,7 +348,8 @@ class TestErrorHandling:
             raise ValueError("Test exception in callback")
 
         server.set_data_callback(bad_callback)
-        server.callback_batch_size = 1  # Ensure callback fires quickly
+        server.callback_batch_size = 1
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
         server.start()
         time.sleep(0.2)
 
@@ -442,13 +398,14 @@ class TestErrorHandling:
 
     def test_multiple_clients_sequential(self, server, test_port, simulator):
         """Test that server can handle multiple clients connecting sequentially."""
-        received_packets = []
+        received: list[BatchParseResult] = []
 
-        def callback(packets):
-            received_packets.extend(packets)
+        def callback(result: BatchParseResult):
+            received.append(result)
 
         server.set_data_callback(callback)
-        server.callback_batch_size = 1  # Immediate flush
+        server.callback_batch_size = 1
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
         server.start()
         time.sleep(0.2)
 
@@ -474,8 +431,7 @@ class TestErrorHandling:
 
         time.sleep(0.3)
 
-        # Should have received packets from both clients
-        assert len(received_packets) >= 2
+        assert sum(r.n_pixels for r in received) >= 2
 
         server.stop()
 

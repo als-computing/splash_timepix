@@ -1,11 +1,12 @@
 """Custom widgets for the TimePix3 UI."""
 
 import logging
+from datetime import datetime
 from functools import lru_cache
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 
@@ -316,6 +317,8 @@ class StatusIndicator(QWidget):
         super().__init__(parent)
         self._label = label
         self._connected = False
+        self._ok_blink_timer: Optional[QTimer] = None
+        self._ok_blink_phase = True
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -335,7 +338,39 @@ class StatusIndicator(QWidget):
 
         layout.addStretch()
 
+    def set_status_detail(self, text: str) -> None:
+        """Update the right-hand status text without changing color or blink timer."""
+        self._status_widget.setText(text)
+
+    def is_ok_blinking(self) -> bool:
+        return self._ok_blink_timer is not None
+
+    def stop_ok_blink(self) -> None:
+        if self._ok_blink_timer is not None:
+            self._ok_blink_timer.stop()
+            self._ok_blink_timer.deleteLater()
+            self._ok_blink_timer = None
+
+    def _toggle_ok_blink(self) -> None:
+        self._ok_blink_phase = not self._ok_blink_phase
+        if self._ok_blink_phase:
+            self._indicator.set_color(QColor(theme.STATUS_OK))
+        else:
+            self._indicator.set_color(QColor(theme.STATUS_OK).darker(200))
+
+    def start_ok_blink(self, detail: str = "", interval_ms: int = 450) -> None:
+        """Blink green while waiting (e.g. Serval JVM up but hardware not ready)."""
+        self.stop_ok_blink()
+        self._connected = True
+        self._ok_blink_phase = True
+        self._indicator.set_color(QColor(theme.STATUS_OK))
+        self._status_widget.setText(detail)
+        self._ok_blink_timer = QTimer(self)
+        self._ok_blink_timer.timeout.connect(self._toggle_ok_blink)
+        self._ok_blink_timer.start(interval_ms)
+
     def set_connected(self, connected: bool, status: str = ""):
+        self.stop_ok_blink()
         self._connected = connected
 
         if connected:
@@ -345,8 +380,22 @@ class StatusIndicator(QWidget):
 
         self._status_widget.setText(status)
 
-    def set_streaming(self):
-        self._indicator.set_color(QColor(theme.STATUS_STREAMING))
+    def set_run_state(self, running: bool, detail: str = ""):
+        """Green when running, red when not (e.g. Serval JVM vs stopped)."""
+        self.stop_ok_blink()
+        self._connected = running
+        if running:
+            self._indicator.set_color(QColor(theme.STATUS_OK))
+        else:
+            self._indicator.set_color(QColor(theme.STATUS_ERROR))
+        self._status_widget.setText(detail)
+
+    def set_streaming_active(self, detail: str = "streaming"):
+        """Solid green while streaming server is receiving data (replaces former blue)."""
+        self.stop_ok_blink()
+        self._connected = True
+        self._indicator.set_color(QColor(theme.STATUS_OK))
+        self._status_widget.setText(detail)
 
 
 # =============================================================================
@@ -397,7 +446,12 @@ class TerminalWidget(QWidget):
         layout.addWidget(self._output)
 
     def append_text(self, text: str):
-        self._output.appendPlainText(text.rstrip("\n"))
+        stripped = text.rstrip("\n")
+        if not stripped:
+            return
+        for line in stripped.split("\n"):
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._output.appendPlainText(f"[{ts}] {line}")
         scrollbar = self._output.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 

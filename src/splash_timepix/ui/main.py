@@ -51,6 +51,10 @@ class MainWindow(QMainWindow):
         self._heartbeat_worker: Optional[HeartbeatMonitorWorker] = None
         self._serval_worker: Optional[ServalPollerWorker] = None
 
+        self._ready_check_timer: Optional[QTimer] = None
+        self._waiting_for_streaming_ready = False
+        self._serval_stdout_tail = ""
+
         self._setup_ui()
         self._setup_workers()
         if autostart_serval:
@@ -114,7 +118,8 @@ class MainWindow(QMainWindow):
         self._zmq_worker.connection_changed.connect(self._on_zmq_connection_changed)
         self._zmq_worker.error_occurred.connect(self._on_zmq_error)
         self._zmq_worker.start()
-        self._engineering_tab.append_zmq_log("ZMQ subscriber started, waiting for data...")
+        self._engineering_tab.set_zmq_thread_status("running")
+        self._engineering_tab.append_zmq_log("ZMQ subscriber thread started.")
 
     def _start_serval(self):
         """Start Serval server on application startup."""
@@ -136,11 +141,26 @@ class MainWindow(QMainWindow):
                 "Could not start Serval server. Check the Engineering tab for details.",
             )
 
+    def _stop_ready_check_timer(self) -> None:
+        """Stop and detach the streaming-ready poll timer (avoids orphan QTimers)."""
+        t = self._ready_check_timer
+        if t is None:
+            return
+        t.stop()
+        try:
+            t.timeout.disconnect(self._check_server_ready)
+        except (TypeError, RuntimeError):
+            pass
+        self._ready_check_timer = None
+
     @Slot(str, dict)
     def _on_start_requested(self, mode: str, params: dict):
         """Handle start request from operator tab."""
         if self._acquiring:
             logger.warning("Already acquiring")
+            return
+        if self._waiting_for_streaming_ready:
+            logger.warning("Already waiting for streaming server to become ready")
             return
 
         self._current_mode = mode
@@ -175,13 +195,18 @@ class MainWindow(QMainWindow):
         self._start_params = (mode, params)
 
         # Wait for heartbeat to show ready
+        self._stop_ready_check_timer()
+        self._waiting_for_streaming_ready = True
+        self._ready_check_count = 0
         self._ready_check_timer = QTimer(self)
         self._ready_check_timer.timeout.connect(self._check_server_ready)
-        self._ready_check_count = 0
         self._ready_check_timer.start(500)
 
     def _check_server_ready(self):
         """Check if streaming server is ready via heartbeat."""
+        if not self._waiting_for_streaming_ready:
+            return
+
         self._ready_check_count += 1
 
         # Get current heartbeat state from operator tab
@@ -190,10 +215,12 @@ class MainWindow(QMainWindow):
             "ready",
             "streaming",
         ):
-            self._ready_check_timer.stop()
+            self._waiting_for_streaming_ready = False
+            self._stop_ready_check_timer()
             self._continue_startup()
         elif self._ready_check_count > 60:  # 30 second timeout
-            self._ready_check_timer.stop()
+            self._waiting_for_streaming_ready = False
+            self._stop_ready_check_timer()
             self._engineering_tab.append_system_log("WARNING: Timeout waiting for server ready")
             QMessageBox.warning(self, "Timeout", "Streaming server did not become ready in time")
             self._process_manager.stop_process("streaming")
@@ -351,6 +378,8 @@ class MainWindow(QMainWindow):
         """Handle kill all request from engineering tab."""
         logger.info("Killing all processes")
         self._engineering_tab.append_system_log("Killing all processes...")
+        self._waiting_for_streaming_ready = False
+        self._stop_ready_check_timer()
         self._process_manager.stop_all()
 
         self._acquiring = False
@@ -363,6 +392,9 @@ class MainWindow(QMainWindow):
         logger.info(f"Process started: {name}")
         self._engineering_tab.set_process_status(name, True)
         self._engineering_tab.append_output(name, "--- Process started ---\n")
+        if name == "serval":
+            self._serval_stdout_tail = ""
+            self._operator_tab.on_serval_process_running(True)
 
     @Slot(str, int)
     def _on_process_stopped(self, name: str, exit_code: int):
@@ -370,6 +402,8 @@ class MainWindow(QMainWindow):
         logger.info(f"Process stopped: {name} (exit code: {exit_code})")
         self._engineering_tab.set_process_status(name, False)
         self._engineering_tab.append_output(name, f"\n--- Process exited (code: {exit_code}) ---\n")
+        if name == "serval":
+            self._operator_tab.on_serval_process_running(False)
 
         mode = getattr(self, "_current_mode", "start")
 
@@ -386,6 +420,10 @@ class MainWindow(QMainWindow):
     def _on_process_output(self, name: str, text: str):
         """Handle process output signal."""
         self._engineering_tab.append_output(name, text)
+        if name == "serval":
+            self._serval_stdout_tail = (self._serval_stdout_tail + text)[-8192:]
+            if "chip temps:" in self._serval_stdout_tail.lower():
+                self._operator_tab.on_serval_chip_temps_line_seen()
 
     def _on_acquisition_complete(self):
         """Handle acquisition completion - save average data."""
@@ -452,12 +490,34 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close - cleanup workers and processes."""
+        if self._acquiring or self._waiting_for_streaming_ready:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Acquisition in progress")
+            msg.setText("Acquisition or startup is still running.")
+            msg.setInformativeText(
+                "Use Stop on the Operator tab first when you want a clean stop and saved outputs "
+                "(where applicable).\n\n"
+                "Closing the window now will terminate all streaming and related processes immediately."
+            )
+            stay = msg.addButton("Stay", QMessageBox.ButtonRole.RejectRole)
+            close_anyway = msg.addButton("Close anyway", QMessageBox.ButtonRole.DestructiveRole)
+            msg.setDefaultButton(stay)
+            msg.exec()
+            if msg.clickedButton() != close_anyway:
+                event.ignore()
+                return
+
         logger.info("Closing application...")
+
+        self._waiting_for_streaming_ready = False
+        self._stop_ready_check_timer()
 
         # Stop all workers
         if self._zmq_worker:
             self._zmq_worker.stop()
             self._zmq_worker.wait(2000)
+            self._engineering_tab.set_zmq_thread_status("stopped")
 
         if self._heartbeat_worker:
             self._heartbeat_worker.stop()

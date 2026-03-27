@@ -354,7 +354,7 @@ if __name__ == "__main__":
 
     # Example 3: Verify the generated data
     print("\nVerifying generated data from experiment_data.bin:")
-    from parser import PacketParser, format_packet
+    from splash_timepix.parser import PacketParser, format_packet
 
     parser = PacketParser()
     pixel_count = 0

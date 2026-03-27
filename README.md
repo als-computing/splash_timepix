@@ -47,11 +47,11 @@ pre-commit install
 The system consists of four main components:
 
 ### 1. Socket Server (`socket_server.py`)
-Multi-threaded TCP server that receives and parses 12-byte TimePix3 packets:
-- **Thread 1**: Socket listener (network I/O)
-- **Thread 2**: Packet parser (delivers to callback)
+Multi-threaded TCP server that receives 12-byte TimePix3 packets and parses them with NumPy (`parser`):
+- **Thread 1**: Socket listener (reads TCP chunks, batches complete packets into raw byte buffers)
+- **Thread 2**: Vectorized parser (`parse_batch`) → callback receives a `BatchParseResult` (arrays per packet type)
 
-See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for details.
+See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for details.
 
 ### 2. Main Application (`app.py`)
 Main application implementing time-resolved binning:
@@ -84,11 +84,13 @@ Simulated TimePix3 data source for testing:
 
 ## Quick Start - Basic Usage Examples
 
+The package installs **`tpx-stream`** as the console entry point for the streaming app (see `pyproject.toml`); `python -m splash_timepix.app` is equivalent.
+
 ### Production Mode (ZMQ Publishing)
 
 **Terminal 1** - Start server:
 ```bash
-splash-timepix
+tpx-stream
 # OR via
 python -m splash_timepix.app
 ```
@@ -96,7 +98,7 @@ python -m splash_timepix.app
 **Terminal 2** - Subscribe to published data:
 ```bash
 # Use (or modify) the example
-python example_zmq_subscriber.py
+python -m splash_timepix.example_zmq_sub
 # OR connect with your application
 ```
 
@@ -109,7 +111,7 @@ python example_zmq_subscriber.py
 
 **Terminal 1** - Start server with visualization:
 ```bash
-splash_timepix --plot
+tpx-stream --plot
 ```
 
 **Terminal 2** - Start data source:
@@ -126,7 +128,7 @@ python -m splash_timepix.simulator_cli
 
 **Terminal 1** - Start server with verbose output
 ```bash
-splash_timepix --verbose
+tpx-stream --verbose
 ```
 
 **Terminal 2**
@@ -307,8 +309,8 @@ The application displays real-time statistics:
 - Unknown packet count
 
 ### Queue Statistics
-- **Message queue**: Raw 12-byte packets (socket → parser)
-- **Typed packets queue**: Parsed packets (parser → callback)
+- **Message queue**: Raw byte batches (socket reader → vectorized parser)
+- **Callback**: One `BatchParseResult` per batch (pixel/TDC/control arrays), not a list of packet objects
 - **x, y, t array queue**: 3D arrays (callback → worker)
 - **Single array size**: Memory per 3D array
 
@@ -381,7 +383,7 @@ pre-commit run --all-files
 ```
 Data Source → Socket Server → Callback (Binning) → Processing Queue → Worker
                 ↓                    ↓                                    ↓
-           Parser (12B)        3D Array (x,y,t)               Plot or Publish
+      Parser (NumPy batches)   3D Array (x,y,t)               Plot or Publish
                                                                     ↓
                                                           ZMQ PUB (start/event/stop)
                                                                     ↓
@@ -396,7 +398,7 @@ Data Source → Socket Server → Callback (Binning) → Processing Queue → Wo
 3. Plotting/ZMQ Worker Thread (output bound)
 4. Input Listener Thread (user commands)
 
-See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for server details.
+See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server details.
 
 ## Troubleshooting
 

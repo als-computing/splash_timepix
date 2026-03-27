@@ -180,7 +180,7 @@ pytest tests/test_listener.py -v
 
 1. Start server: `cd /path/to/splash_timepix` then `python -m splash_timepix.app --tdc-frequency 1000`
 2. Connect live-cli in another terminal.
-3. Start acquisition (e.g. `tpx-acq -tdc 1000 -t 60`).
+3. Start acquisition from live-cli (or your site workflow).
 4. Monitor: `python -m splash_timepix.example_zmq_sub`
 
 ---
