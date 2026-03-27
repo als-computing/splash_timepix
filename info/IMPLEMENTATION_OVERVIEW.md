@@ -70,7 +70,7 @@ Created Pydantic-based schema definitions for three message types:
 - Added tracking variables: `start_message_sent`, `acquisition_start_time`
 
 **Start Message Logic:**
-- Sent in `data_callback_np()` when first data packet arrives
+- Sent in `data_callback()` when first data packet arrives
 - Contains all configuration parameters from app initialization
 - Queued to `message_queue` for ZMQ worker to publish
 
