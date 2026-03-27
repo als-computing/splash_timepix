@@ -31,17 +31,17 @@ def main():
     stop_script = project_root / "ASI" / "serval_client" / "stop.py"
 
     if not stop_script.exists():
-        print(f"❌ Stop script not found at: {stop_script}")
+        print(f"ERROR: Stop script not found at: {stop_script}")
         raise typer.Exit(1)
 
-    print("🛑 Stopping acquisition...")
+    print("Stopping acquisition...")
 
     try:
         result = subprocess.run(
             [sys.executable, str(stop_script)],
             cwd=stop_script.parent,
             capture_output=True,
-            text=True
+            text=True,
         )
 
         if result.stdout:
@@ -50,16 +50,15 @@ def main():
             print(result.stderr.strip())
 
         if result.returncode == 0:
-            print("✅ Acquisition stopped successfully")
+            print("Acquisition stopped successfully")
         else:
-            print(f"❌ Stop script exited with code {result.returncode}")
+            print(f"ERROR: Stop script exited with code {result.returncode}")
             raise typer.Exit(1)
 
     except Exception as e:
-        print(f"❌ Failed to stop acquisition: {e}")
+        print(f"ERROR: Failed to stop acquisition: {e}")
         raise typer.Exit(1)
 
 
 if __name__ == "__main__":
     app()
-    

@@ -1,15 +1,15 @@
 """
 Stop a running TimePix3 acquisition gracefully.
 """
+
 import logging
-from .lib import ServalError, ServalClient
+
+from .lib import ServalClient
 
 
 def main() -> None:
 
-    logging.basicConfig(
-        level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
     client = ServalClient()
     client.check_connection()
@@ -18,4 +18,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

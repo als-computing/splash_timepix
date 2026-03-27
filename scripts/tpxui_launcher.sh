@@ -1,6 +1,6 @@
 #!/bin/bash
 # TimePix3 UI Launcher
-# 
+#
 # Launches the TimePix3 Acquisition UI with Serval autostart enabled.
 # If Serval is already running, it will be detected and not started again.
 #

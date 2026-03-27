@@ -31,6 +31,7 @@ pip install -e .[dev]
 - `msgpack` - Serialization for ZMQ
 - `typer` - CLI interface
 - `psutil` - System monitoring
+- `pydantic` - Message schema validation
 
 ## Configuration
 
@@ -73,6 +74,7 @@ Two alternative workers for consuming 3D arrays:
 - Uses msgpack serialization
 - Multi-part messages (metadata + array bytes)
 - Supports multiple subscribers
+- Publishes start/stop control messages for acquisition lifecycle tracking
 
 ### 4. Simulated Source (`simulator_cli.py`)
 Simulated TimePix3 data source for testing:
@@ -115,7 +117,7 @@ splash_timepix --plot
 # Using real detector
 ./ASI/live-cli_alpha-1/live-cli
 # OR replaying from file
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
 # OR using the simulator
 python -m splash_timepix.simulator_cli
 ```
@@ -140,7 +142,7 @@ cps 100000
 tdc 0.1
 start 60
 # OR (III) Using Replay From File (live-cli)
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
 ```
 
 ## Command-Line Options
@@ -181,17 +183,39 @@ After starting the test source, use these commands:
 - `stop` - Stop streaming data
 - `quit` - Exit
 
-## ZMQ Data Format
+## ZMQ Message Format
 
-Published arrays use a **multi-part message** format:
+The system publishes three types of messages via ZMQ:
+
+### 1. Start Message (Single-part)
+Published when data acquisition begins (first data arrives):
+```python
+{
+    'msg_type': 'start',
+    'scan_name': 'acquisition_20250112T160536Z_8b850728',
+    'tdc_frequency_hz': 10.0,
+    'detector_size_x': 256,
+    'detector_size_y': 256,
+    'n_bins': 350,
+    't_delta_ns': 285714.29,
+    # ... other configuration parameters
+}
+```
+
+### 2. Event Message (Multi-part)
+Published for each data flush:
 
 **Part 1: Metadata (msgpack)**
 ```python
 {
-    'shape': (256, 256, 100),     # Array dimensions
+    'msg_type': 'event',
+    'shape': (256, 256, 350),     # Array dimensions
     'dtype': 'uint32',             # Numpy dtype
     'timestamp': 1699999999.123,   # Unix timestamp
-    'array_count': 42              # Sequential counter
+    'flush_number': 1,             # Sequential flush number
+    'cycles_in_flush': 10,         # TDC cycles in this flush
+    'total_cycles': 10,            # Cumulative cycle count
+    # ... other metadata
 }
 ```
 
@@ -199,9 +223,23 @@ Published arrays use a **multi-part message** format:
 - Raw numpy array bytes
 - Reconstruct with `np.frombuffer(bytes, dtype).reshape(shape)`
 
+### 3. Stop Message (Single-part)
+Published when data acquisition ends (client disconnects or server shuts down):
+```python
+{
+    'msg_type': 'stop',
+    'scan_name': 'acquisition_20250112T160536Z_8b850728',
+    'total_flushes': 9,
+    'total_cycles': 99,
+    'total_packets': 50000,
+    'acquisition_duration_s': 28.91,
+    # ... statistics
+}
+```
+
 ### Example Subscriber
 
-**See also `example_zmq_sub.py`**
+**See also `example_zmq_sub.py`** for a complete example that handles all message types.
 
 ```python
 import zmq
@@ -214,16 +252,48 @@ socket.connect("tcp://localhost:5657")
 socket.setsockopt(zmq.SUBSCRIBE, b"")
 
 while True:
-    # Receive multi-part message
+    # Receive first part (metadata)
     metadata_bytes = socket.recv()
-    array_bytes = socket.recv()
-    
-    # Unpack
     metadata = msgpack.unpackb(metadata_bytes)
-    array = np.frombuffer(array_bytes, dtype=metadata['dtype']).reshape(metadata['shape'])
-    
-    # Process
-    print(f"Received array: {array.shape}, total counts: {np.sum(array)}")
+    msg_type = metadata.get('msg_type')
+
+    if msg_type == 'start':
+        print(f"Acquisition started: {metadata['scan_name']}")
+    elif msg_type == 'stop':
+        print(f"Acquisition stopped: {metadata['scan_name']}")
+    elif msg_type == 'event' or msg_type is None:
+        # Event message - receive array data
+        array_bytes = socket.recv()
+        array = np.frombuffer(array_bytes, dtype=metadata['dtype']).reshape(metadata['shape'])
+        print(f"Received flush #{metadata.get('flush_number')}: {array.shape}")
+```
+
+### Using the Listener Pattern
+
+For a more structured approach, use `SplashTimePixZMQListener` (similar to ArroyoXPS):
+
+**See also `example_listener.py`**
+
+```python
+from splash_timepix.listener import SplashTimePixZMQListener
+from splash_timepix.schemas import TimePixStart, TimePixEvent, TimePixStop
+
+def my_operator(message):
+    if isinstance(message, TimePixStart):
+        # Initialize processing
+        print(f"Start: {message.scan_name}")
+    elif isinstance(message, TimePixEvent):
+        # Process data array
+        print(f"Event: flush #{message.flush_number}, shape={message.array.shape}")
+    elif isinstance(message, TimePixStop):
+        # Finalize processing
+        print(f"Stop: {message.scan_name}, {message.total_flushes} flushes")
+
+listener = SplashTimePixZMQListener(
+    zmq_address="tcp://localhost:5657",
+    operator=my_operator
+)
+listener.start()  # Blocks until stopped
 ```
 
 ## Statistics Display
@@ -292,7 +362,14 @@ Replay recorded `.tpx3` files:
 
 ### Run Tests
 ```bash
+# Run all tests
 pytest
+
+# Run start/stop message tests
+pytest tests/test_start_stop_messages.py -v
+
+# Run quick manual test (requires server running)
+python tests/test_start_stop_quick.py
 ```
 
 ### Run Pre-commit Checks
@@ -305,6 +382,12 @@ pre-commit run --all-files
 Data Source → Socket Server → Callback (Binning) → Processing Queue → Worker
                 ↓                    ↓                                    ↓
            Parser (12B)        3D Array (x,y,t)               Plot or Publish
+                                                                    ↓
+                                                          ZMQ PUB (start/event/stop)
+                                                                    ↓
+                                                          SplashTimePixZMQListener
+                                                                    ↓
+                                                          Operator (your processing)
 ```
 
 **Threading:**

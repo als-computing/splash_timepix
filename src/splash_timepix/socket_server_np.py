@@ -12,37 +12,33 @@ Key differences from original:
 
 import logging
 import queue
-from collections import deque
 import socket
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
-import numpy as np
-
-from splash_timepix.parser_np import PacketParser, BatchParseResult
+from splash_timepix.parser_np import BatchParseResult, PacketParser
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 class RingBufferHandler(logging.Handler):
     """Logging handler that keeps only the last N log records in a ring buffer."""
-    
+
     def __init__(self, capacity=10):
         super().__init__()
         self.buffer = deque(maxlen=capacity)
-    
+
     def emit(self, record):
         msg = self.format(record)
         self.buffer.append(msg)
-    
+
     def get_logs(self):
         return list(self.buffer)
-    
+
     def clear(self):
         self.buffer.clear()
 
@@ -50,13 +46,13 @@ class RingBufferHandler(logging.Handler):
 class SocketDataServer:
     """
     NumPy-accelerated multi-threaded server for TimePix3 data.
-    
+
     Key optimization: batches raw bytes and uses vectorized parsing,
     passing NumPy arrays directly to callbacks.
     """
-    
+
     PACKET_SIZE = 12  # 96 bits = 12 bytes
-    
+
     def __init__(
         self,
         host: str = "localhost",
@@ -64,7 +60,7 @@ class SocketDataServer:
         buffer_size: int = 1000,
         debug: bool = False,
         callback_batch_size: int = 10000,
-        exit_on_disconnect: bool = False
+        exit_on_disconnect: bool = False,
     ):
         """
         Initialize the socket server.
@@ -91,19 +87,19 @@ class SocketDataServer:
         self.exit_on_disconnect = exit_on_disconnect
         self.client_connected = False
         self.client_disconnected_event = threading.Event()
-        
+
         self.socket_thread: Optional[threading.Thread] = None
         self.processor_thread: Optional[threading.Thread] = None
         self.server_socket: Optional[socket.socket] = None
 
         # NumPy parser instance
         self.parser = PacketParser()
-        
+
         # Debug/stats
         self.debug = debug
         self.unknown_packet_count = 0
         self.total_packets_parsed = 0
-        
+
         if self.debug:
             self.valid_packet_buffer = deque(maxlen=10)
         else:
@@ -111,7 +107,7 @@ class SocketDataServer:
 
         # Callback receives BatchParseResult
         self.data_callback: Optional[Callable[[BatchParseResult], None]] = None
-        
+
         # Byte accumulator for batching
         self._byte_buffer = bytearray()
         self._byte_buffer_lock = threading.Lock()
@@ -170,10 +166,10 @@ class SocketDataServer:
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            
+
             # Increase receive buffer for high throughput
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-            
+
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
 
@@ -183,16 +179,16 @@ class SocketDataServer:
                 try:
                     client_socket, client_address = self.server_socket.accept()
                     logger.info(f"Client connected from {client_address}")
-                    
+
                     # Set client socket buffer size
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-                    
+
                     self.client_connected = True
                     self._handle_client(client_socket)
-                    
+
                     self.client_connected = False
                     self.client_disconnected_event.set()
-                    
+
                     if self.exit_on_disconnect:
                         logger.info("Client disconnected, shutting down")
                         self.running = False
@@ -212,23 +208,23 @@ class SocketDataServer:
     def _handle_client(self, client_socket: socket.socket) -> None:
         """
         Handle client connection with optimized batched reading.
-        
+
         Reads large chunks and batches them for efficient processing.
         Includes timeout-based flushing for low count rates.
         """
         # Read buffer size (read up to 64KB at once)
         READ_SIZE = 65536
-        
+
         # Timeout for partial batch flush (seconds)
         FLUSH_TIMEOUT = 0.1
-        
+
         # Local byte accumulator
         byte_buffer = bytearray()
         last_flush_time = time.time()
-        
+
         # Set socket timeout for non-blocking reads
         client_socket.settimeout(FLUSH_TIMEOUT)
-        
+
         try:
             while self.running:
                 # Read a chunk of data
@@ -237,27 +233,27 @@ class SocketDataServer:
                     if not chunk:
                         logger.info("Client disconnected")
                         break
-                    
+
                     byte_buffer.extend(chunk)
-                    
+
                     # When we have enough for a batch, queue it
                     while len(byte_buffer) >= self.batch_byte_size:
-                        batch = bytes(byte_buffer[:self.batch_byte_size])
-                        del byte_buffer[:self.batch_byte_size]
-                        
+                        batch = bytes(byte_buffer[: self.batch_byte_size])
+                        del byte_buffer[: self.batch_byte_size]
+
                         try:
                             self.message_queue.put(batch, timeout=1.0)
                             last_flush_time = time.time()
                         except queue.Full:
                             logger.warning("Message queue full, dropping batch")
-                            
+
                 except socket.timeout:
                     # No data received - check if we should flush partial batch
                     pass
                 except socket.error as e:
                     logger.error(f"Socket read error: {e}")
                     break
-                
+
                 # Flush partial batch if timeout exceeded and we have complete packets
                 current_time = time.time()
                 if current_time - last_flush_time >= FLUSH_TIMEOUT:
@@ -266,13 +262,13 @@ class SocketDataServer:
                         flush_bytes = complete_packets * self.PACKET_SIZE
                         batch = bytes(byte_buffer[:flush_bytes])
                         del byte_buffer[:flush_bytes]
-                        
+
                         try:
                             self.message_queue.put(batch, timeout=1.0)
                             last_flush_time = current_time
                         except queue.Full:
                             logger.warning("Message queue full, dropping partial batch")
-            
+
             # Flush remaining bytes on disconnect (if any complete packets)
             remaining_packets = len(byte_buffer) // self.PACKET_SIZE
             if remaining_packets > 0:
@@ -281,7 +277,7 @@ class SocketDataServer:
                     self.message_queue.put(bytes(byte_buffer[:final_bytes]), timeout=1.0)
                 except queue.Full:
                     logger.warning("Could not flush final batch")
-                    
+
         except Exception as e:
             logger.error(f"Error handling client: {e}")
         finally:
@@ -290,40 +286,38 @@ class SocketDataServer:
     def _data_processor(self) -> None:
         """
         Thread that processes byte batches using vectorized parsing.
-        
+
         Receives raw bytes, parses with NumPy, calls callback with arrays.
         """
         logger.info("Data processor thread started (NumPy accelerated)")
-        
+
         while self.running or not self.message_queue.empty():
             try:
                 # Get a batch of bytes
                 batch_bytes = self.message_queue.get(timeout=1.0)
-                
+
                 # Parse entire batch at once with NumPy
                 result = self.parser.parse_batch(batch_bytes)
-                
+
                 # Update stats
                 self.total_packets_parsed += result.n_pixels + result.n_tdc + result.n_control
                 self.unknown_packet_count += result.n_unknown
-                
+
                 # Debug logging
                 if self.debug and self.valid_packet_buffer is not None:
                     if result.n_pixels > 0:
                         self.valid_packet_buffer.append(
-                            f"Pixel batch: {result.n_pixels} pixels, "
-                            f"x=[{result.pixel_x[0]}..{result.pixel_x[-1]}]"
+                            f"Pixel batch: {result.n_pixels} pixels, " f"x=[{result.pixel_x[0]}..{result.pixel_x[-1]}]"
                         )
                     if result.n_tdc > 0:
                         self.valid_packet_buffer.append(
-                            f"TDC batch: {result.n_tdc} TDCs, "
-                            f"ch={result.tdc_channel[:3]}..."
+                            f"TDC batch: {result.n_tdc} TDCs, " f"ch={result.tdc_channel[:3]}..."
                         )
-                
+
                 # Call callback with BatchParseResult
                 if self.data_callback:
                     self.data_callback(result)
-                
+
                 self.message_queue.task_done()
 
             except queue.Empty:
@@ -356,17 +350,19 @@ class SocketDataServer:
 # EXAMPLE / TEST
 # =============================================================================
 
+
 def main():
     """Example usage of the NumPy-accelerated SocketDataServer."""
-    import psutil
     import os
-    
+
+    import psutil
+
     server = SocketDataServer(
         host="localhost",
         port=9090,
         buffer_size=100,
         callback_batch_size=10000,
-        debug=True
+        debug=True,
     )
 
     # Stats
@@ -378,7 +374,7 @@ def main():
         nonlocal total_pixels, total_tdcs
         total_pixels += result.n_pixels
         total_tdcs += result.n_tdc
-        
+
         if result.n_pixels > 0:
             logger.debug(f"Received {result.n_pixels} pixels, {result.n_tdc} TDCs")
 
@@ -393,10 +389,12 @@ def main():
             elapsed = time.time() - start_time
             rate = total_pixels / elapsed if elapsed > 0 else 0
             mem = process.memory_info().rss / 1024**3
-            
-            print(f"Pixels: {total_pixels:.2e}, TDCs: {total_tdcs}, "
-                  f"Rate: {rate:.2e}/s, Mem: {mem:.2f} GB, "
-                  f"Queue: {server.get_queue_size()}")
+
+            print(
+                f"Pixels: {total_pixels:.2e}, TDCs: {total_tdcs}, "
+                f"Rate: {rate:.2e}/s, Mem: {mem:.2f} GB, "
+                f"Queue: {server.get_queue_size()}"
+            )
 
     except KeyboardInterrupt:
         print("\nShutting down...")
@@ -405,4 +403,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

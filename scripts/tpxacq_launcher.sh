@@ -1,6 +1,6 @@
 #!/bin/bash
 # TimePix3 Acquisition Launcher
-# 
+#
 # Opens a terminal with the splash_timepix venv activated.
 # User can start and stop acquisitions from this terminal.
 #

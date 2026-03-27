@@ -42,7 +42,7 @@ from splash_timepix.parser import PixelPacket, TDCPacket
 def my_callback(packets):
     """
     Called when callback_batch_size packets have been buffered.
-    
+
     Args:
         packets: List of parsed packet objects (PixelPacket, TDCPacket, ControlPacket)
     """
@@ -91,7 +91,7 @@ def count_packets(packets):
     for packet in packets:
         if isinstance(packet, PixelPacket):
             packet_count += 1
-    
+
     if packet_count % 10000 == 0:
         print(f"Processed {packet_count} pixel events")
 
@@ -170,9 +170,9 @@ The following components are **thread-safe**:
 
 | Component | Thread-Safe? | Mechanism |
 |-----------|--------------|-----------|
-| `message_queue` | ✅ Yes | Built-in `queue.Queue` locks |
-| `callback_buffer` | ✅ Yes | Only accessed by data processor thread |
-| Callback execution | ⚠️ User responsibility | Runs on data processor thread |
+| `message_queue` | Yes | Built-in `queue.Queue` locks |
+| `callback_buffer` | Yes | Only accessed by data processor thread |
+| Callback execution | User responsibility | Runs on data processor thread |
 
 **For callback writers:** If your callback modifies shared state, you must use proper synchronization (locks, queues, etc.).
 

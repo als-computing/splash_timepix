@@ -8,6 +8,7 @@ import random
 import time
 from dataclasses import dataclass
 from typing import Generator, List, Optional
+
 import numpy as np
 
 # Constants from the parser
@@ -34,9 +35,7 @@ class PacketBuilder:
     """Builder for creating 96-bit packets"""
 
     @staticmethod
-    def build_pixel_packet(
-        timestamp: int, tot: int, x: int, y: int, reserved: int = 0
-    ) -> bytes:
+    def build_pixel_packet(timestamp: int, tot: int, x: int, y: int, reserved: int = 0) -> bytes:
         """
         Build a pixel packet.
 
@@ -64,9 +63,7 @@ class PacketBuilder:
         return full_value.to_bytes(12, byteorder="big")
 
     @staticmethod
-    def build_tdc_packet(
-        timestamp: int, channel: int, edge: int, reserved: int = 0
-    ) -> bytes:
+    def build_tdc_packet(timestamp: int, channel: int, edge: int, reserved: int = 0) -> bytes:
         """
         Build a TDC packet.
 
@@ -152,17 +149,13 @@ class PacketSimulator:
         if start_timestamp is None:
             # Convert current time to timestamp ticks
             self.start_real_time = time.time()
-            self.start_timestamp = int(
-                self.start_real_time * TIMESTAMP_CLOCK_MHZ * 1_000_000
-            )
+            self.start_timestamp = int(self.start_real_time * TIMESTAMP_CLOCK_MHZ * 1_000_000)
         else:
             self.start_real_time = time.time()
             self.start_timestamp = start_timestamp
 
         # Calculate TDC pulse width in timestamp ticks
-        self.tdc_pulse_width_ticks = int(
-            self.config.tdc_pulse_width_ns / (TIMESTAMP_PS_PER_TICK / 1000)
-        )
+        self.tdc_pulse_width_ticks = int(self.config.tdc_pulse_width_ns / (TIMESTAMP_PS_PER_TICK / 1000))
 
         # State
         self.shutter_open = False
@@ -183,11 +176,7 @@ class PacketSimulator:
         y = random.randint(0, self.config.detector_size_y - 1)
 
         # ToT with normal distribution, clipped to valid range
-        tot = int(
-            np.clip(
-                np.random.normal(self.config.tot_mean, self.config.tot_sigma), 0, 1023
-            )
-        )
+        tot = int(np.clip(np.random.normal(self.config.tot_mean, self.config.tot_sigma), 0, 1023))
 
         return self.builder.build_pixel_packet(timestamp, tot, x, y)
 
@@ -211,30 +200,26 @@ class PacketSimulator:
         timestamp = self.get_current_timestamp()
 
         # Heartbeat
-        packets.append(
-            self.builder.build_control_packet(timestamp, ControlSubtype.HEARTBEAT)
-        )
+        packets.append(self.builder.build_control_packet(timestamp, ControlSubtype.HEARTBEAT))
 
         # Timestamp packet
-        packets.append(
-            self.builder.build_control_packet(timestamp + 100, ControlSubtype.TIMESTAMP)
-        )
+        packets.append(self.builder.build_control_packet(timestamp + 100, ControlSubtype.TIMESTAMP))
 
         return packets
 
     def generate_stream(self, duration_seconds: float) -> Generator[bytes, None, None]:
         """
         Generate a mixed stream of packets over time.
-        
+
         Pixels follow Poisson distribution based on count rate.
         TDC pulses occur at fixed frequency.
-        
+
         Args:
             duration_seconds: How long to generate packets for
-        
+
         Yields:
             Packet bytes in chronological order
-            
+
         Note:
             Due to timing differences between real-time scheduling and detector
             timestamps, some pixels may be generated with timestamps that fall
@@ -245,16 +230,8 @@ class PacketSimulator:
         start_time = time.time()
 
         # Calculate intervals
-        tdc_interval = (
-            1.0 / self.config.tdc_frequency
-            if self.config.tdc_frequency > 0
-            else float("inf")
-        )
-        control_interval = (
-            self.config.control_packet_interval
-            if self.config.include_control_packets
-            else float("inf")
-        )
+        tdc_interval = 1.0 / self.config.tdc_frequency if self.config.tdc_frequency > 0 else float("inf")
+        control_interval = self.config.control_packet_interval if self.config.include_control_packets else float("inf")
 
         # Next event times
         next_tdc_time = start_time + tdc_interval
@@ -263,9 +240,7 @@ class PacketSimulator:
         # For pixel events, we use exponential distribution for inter-arrival times
         # This gives us Poisson-distributed events
         if self.config.pixel_count_rate > 0:
-            next_pixel_time = start_time + random.expovariate(
-                self.config.pixel_count_rate
-            )
+            next_pixel_time = start_time + random.expovariate(self.config.pixel_count_rate)
         else:
             next_pixel_time = float("inf")
 
@@ -284,10 +259,7 @@ class PacketSimulator:
                 events.append((next_tdc_time, "tdc", None))
                 next_tdc_time += tdc_interval
 
-            while (
-                next_control_time <= current_time
-                and self.config.include_control_packets
-            ):
+            while next_control_time <= current_time and self.config.include_control_packets:
                 events.append((next_control_time, "control", None))
                 next_control_time += control_interval
 
@@ -403,7 +375,5 @@ if __name__ == "__main__":
 
     print("\nPacket counts:")
     print(f"  Pixels: {pixel_count} ({pixel_count/10:.1f} Hz)")
-    print(
-        f"  TDC: {tdc_count} ({tdc_count/2/10:.1f} Hz)"
-    )  # Divide by 2 for rise/fall pairs
+    print(f"  TDC: {tdc_count} ({tdc_count/2/10:.1f} Hz)")  # Divide by 2 for rise/fall pairs
     print(f"  Control: {control_count}")

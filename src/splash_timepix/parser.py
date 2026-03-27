@@ -77,18 +77,12 @@ class TDCPacket(BasePacket):
     @property
     def channel_name(self) -> str:
         """Get channel name"""
-        return (
-            TDCChannel(self.channel).name
-            if self.channel in [1, 2]
-            else f"Unknown({self.channel})"
-        )
+        return TDCChannel(self.channel).name if self.channel in [1, 2] else f"Unknown({self.channel})"
 
     @property
     def edge_name(self) -> str:
         """Get edge type name"""
-        return (
-            TDCEdge(self.edge).name if self.edge in [0, 1] else f"Unknown({self.edge})"
-        )
+        return TDCEdge(self.edge).name if self.edge in [0, 1] else f"Unknown({self.edge})"
 
 
 @dataclass
@@ -101,11 +95,7 @@ class ControlPacket(BasePacket):
     @property
     def subtype_name(self) -> str:
         """Get subtype name"""
-        return (
-            ControlSubtype(self.subtype).name
-            if self.subtype <= 3
-            else f"Unknown({self.subtype})"
-        )
+        return ControlSubtype(self.subtype).name if self.subtype <= 3 else f"Unknown({self.subtype})"
 
 
 class PacketParser:
@@ -144,14 +134,12 @@ class PacketParser:
         else:
             return None  # Unknown packet type, log or raise error here?
 
-    def _parse_pixel(
-        self, packet_type: int, timestamp: int, specific_data: int
-    ) -> PixelPacket:
+    def _parse_pixel(self, packet_type: int, timestamp: int, specific_data: int) -> PixelPacket:
         """Parse pixel-specific data"""
         reserved = specific_data & 0x3F  # bits 0-5
-        # x and y swapped compared to "Draft-format-for-live-data-processing-v2.pdf"
-        x = (specific_data >> 6) & 0x3FF  # bits 6-15
-        y = (specific_data >> 16) & 0x3FF  # bits 16-25
+        # Packet format: reserved(0-5) | y(6-15) | x(16-25) | tot(26-35)
+        y = (specific_data >> 6) & 0x3FF  # bits 6-15
+        x = (specific_data >> 16) & 0x3FF  # bits 16-25
         tot = (specific_data >> 26) & 0x3FF  # bits 26-35
 
         return PixelPacket(
@@ -163,9 +151,7 @@ class PacketParser:
             reserved=reserved,
         )
 
-    def _parse_tdc(
-        self, packet_type: int, timestamp: int, specific_data: int
-    ) -> TDCPacket:
+    def _parse_tdc(self, packet_type: int, timestamp: int, specific_data: int) -> TDCPacket:
         """Parse TDC-specific data"""
         reserved = specific_data & 0x1FFFFFFF  # bits 0-28
         edge = (specific_data >> 29) & 0x1  # bit 29
@@ -179,9 +165,7 @@ class PacketParser:
             reserved=reserved,
         )
 
-    def _parse_control(
-        self, packet_type: int, timestamp: int, specific_data: int
-    ) -> ControlPacket:
+    def _parse_control(self, packet_type: int, timestamp: int, specific_data: int) -> ControlPacket:
         """Parse control-specific data"""
         reserved = specific_data & 0xFFFFFFFF  # bits 0-31
         subtype = (specific_data >> 32) & 0xF  # bits 32-35
@@ -222,10 +206,7 @@ def format_packet(packet: Union[PixelPacket, TDCPacket, ControlPacket]) -> str:
             f"channel={packet.channel_name}, edge={packet.edge_name}"
         )
     elif isinstance(packet, ControlPacket):
-        return (
-            f"Control: time={packet.timestamp} ({packet.timestamp_ps:.2f} ps), "
-            f"subtype={packet.subtype_name}"
-        )
+        return f"Control: time={packet.timestamp} ({packet.timestamp_ps:.2f} ps), " f"subtype={packet.subtype_name}"
     else:
         return "Unknown packet"
 

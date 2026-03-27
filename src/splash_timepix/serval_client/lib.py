@@ -1,9 +1,10 @@
-import logging
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List
+
 import requests
-import time
 
 
 class ServalError(Exception):
@@ -17,21 +18,16 @@ class ServalClient:
     Client to interact with the Serval detector server via HTTP.
     """
 
-    def __init__(self, base_url: str = "http://localhost:8080",
-                 timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 10.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
         self.timeout = timeout
 
         logging.debug(f"Initialized ServalClient for {self.base_url}")
 
-    def _request(
-        self, method: str, endpoint: str, *, expected_status: int = 200, **kwargs: Any
-    ) -> requests.Response:
+    def _request(self, method: str, endpoint: str, *, expected_status: int = 200, **kwargs: Any) -> requests.Response:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        logging.debug(
-            f"{method.upper()} {url} payload={kwargs.get('data') or kwargs.get('params')}"
-        )
+        logging.debug(f"{method.upper()} {url} payload={kwargs.get('data') or kwargs.get('params')}")
 
         try:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
@@ -39,9 +35,7 @@ class ServalClient:
             raise ServalError(f"Connection error: {e}")
 
         if response.status_code != expected_status:
-            raise ServalError(
-                f"Unexpected status {response.status_code} for {url}: {response.text}"
-            )
+            raise ServalError(f"Unexpected status {response.status_code} for {url}: {response.text}")
 
         return response
 
@@ -95,9 +89,7 @@ class ServalClient:
         if restartTimers:
             restartTimersString = "true"
 
-        resp = self._request(
-            "get", "/measurement/start", params={"restartTimers": restartTimersString}
-        )
+        resp = self._request("get", "/measurement/start", params={"restartTimers": restartTimersString})
 
         logging.info(f"Acquisition started: {resp.text.strip()}")
 
