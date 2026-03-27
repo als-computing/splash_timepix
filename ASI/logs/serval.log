@@ -13889,3 +13889,124 @@ sudo  sysctl -w net.core.rmem_default=26214400
 [2026-03-27 16:05:54] INFO   Stopped ServerConnector@67304a40{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
 [2026-03-27 16:05:54] INFO   Stopped o.e.j.s.ServletContextHandler@48d293ee{/,null,STOPPED}
 [2026-03-27 16:05:54] INFO   Stopped o.e.j.s.h.ContextHandler@7561db12{/docs,null,STOPPED}
+[2026-03-27 16:25:07] INFO   Serval version 4.1.1 - Build: 1356, commit: 31bef7f, on: 2025/09/04 07:51
+[2026-03-27 16:25:07] INFO   WebSocketHandler instantiated with Serval instance
+[2026-03-27 16:25:07] INFO   Attempting reconnect...
+[2026-03-27 16:25:07] INFO   Successfully connected to /192.168.100.10:50000.
+[2026-03-27 16:25:07] INFO   Connection to /192.168.100.10:50001 failed
+[2026-03-27 16:25:07] INFO   Connection to /192.168.100.10:50051 failed
+[2026-03-27 16:25:07] INFO   Connection to /127.0.0.1:50000 failed
+[2026-03-27 16:25:07] INFO   Connection to /127.0.0.1:50001 failed
+[2026-03-27 16:25:07] INFO   Connection to /127.0.0.1:50051 failed
+[2026-03-27 16:25:08] INFO   jetty-11.0.14; built: 2023-02-22T23:41:48.575Z; git: 4601fe8dd805ce75b69c64466c115a162586641b; jvm 21.0.10+7-Ubuntu-124.04
+[2026-03-27 16:25:08] INFO   Started o.e.j.s.h.ContextHandler@6831d8fd{/docs,null,AVAILABLE}
+[2026-03-27 16:25:08] INFO   WebSocketHandler instantiated with Serval instance
+[2026-03-27 16:25:08] INFO   Softw: 24112500
+[2026-03-27 16:25:08] INFO   deviceMask 15
+[2026-03-27 16:25:08] INFO   Number of Cores: 24
+[2026-03-27 16:25:08] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:25:09] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:25:10] INFO   Started o.e.j.s.ServletContextHandler@5ef6fd7f{/,null,AVAILABLE}
+[2026-03-27 16:25:10] INFO   Started ServerConnector@2d6764b2{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
+[2026-03-27 16:25:10] INFO   Started Server@213e3629{STARTING}[11.0.14,sto=0] @4307ms
+[2026-03-27 16:25:11] INFO   Get PLL Config 0 -> 001e
+[2026-03-27 16:25:11] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:25:12] INFO   Size of UDP Receiver buffer: 26214400
+[2026-03-27 16:25:13] WARN   UDPReceiver channel 0 could not set RcvBuf Size 26214400. Current size: 212992
+Please increase with: sudo  sysctl -w net.core.rmem_max=26214400
+sudo  sysctl -w net.core.rmem_default=26214400
+[2026-03-27 16:25:13] INFO   Counted 1 packets
+[2026-03-27 16:25:13] INFO   Counted 1 packets
+[2026-03-27 16:25:13] INFO   Already IDLE
+[2026-03-27 16:25:13] INFO   Chip 0 TOA corrections for 1 phases: [97, -16, 98, -16, 99, -16, 100, -16, 101, -16]
+[2026-03-27 16:25:13] INFO   Chip temps: 51 0 0 0
+[2026-03-27 16:25:13] INFO   ============= Run Nic Tuning =============
+[2026-03-27 16:25:13] INFO   Detector is connected to network interface: <name> = ens2 <HostAddress> = /192.168.100.1 <MTU> = 9000 <isLoopback> = false <isUp> = true
+[2026-03-27 16:25:13] WARN   Could not find a nictune file at: [./nictune.sh, /usr/share/asi/serval/nictune.sh]
+[2026-03-27 16:25:33] INFO   Chip temps: 50 0 0 0
+[2026-03-27 16:25:34] INFO   ===================== Prepare measurement ===================
+[2026-03-27 16:25:34] INFO   Number of file writers: 1
+[2026-03-27 16:25:34] INFO   Number of raw writers: 2
+[2026-03-27 16:25:34] INFO   Enabled heartbeat with a 1.0s period.
+[2026-03-27 16:25:34] INFO   Size of ring buffer: 128
+[2026-03-27 16:25:34] INFO   Size of UDP Disruptor: 262144
+[2026-03-27 16:25:35] INFO   Number of frame assemblers: 8
+[2026-03-27 16:25:35] INFO   Using sequence headers.
+[2026-03-27 16:25:35] INFO   Number of UDP receivers: 1
+[2026-03-27 16:25:35] INFO   Size of UDP Receiver buffer: 26214400
+[2026-03-27 16:25:35] INFO   Size of image pool: 68
+[2026-03-27 16:25:35] INFO   Size of integration image pool: 34
+[2026-03-27 16:25:35] INFO   ===================== Start measurement =====================
+nTriggers: 60, Trigger FPS: 1.0, Exposure (ms): 1000.0
+[2026-03-27 16:25:35] WARN   UDPReceiver channel 0 could not set RcvBuf Size 26214400. Current size: 212992
+Please increase with: sudo  sysctl -w net.core.rmem_max=26214400
+sudo  sysctl -w net.core.rmem_default=26214400
+[2026-03-27 16:26:36] INFO   Counted 168 packets
+[2026-03-27 16:26:36] INFO   Counted 168 packets
+[2026-03-27 16:26:36] INFO   Processed 60 frames and dropped 0 frames.
+[2026-03-27 16:26:36] INFO   ===================== End measurement ======================
+[2026-03-27 16:29:07] INFO   Stopped Server@213e3629{STOPPING}[11.0.14,sto=0]
+[2026-03-27 16:29:07] INFO   Stopped ServerConnector@2d6764b2{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
+[2026-03-27 16:29:07] INFO   Stopped o.e.j.s.ServletContextHandler@5ef6fd7f{/,null,STOPPED}
+[2026-03-27 16:29:07] INFO   Stopped o.e.j.s.h.ContextHandler@6831d8fd{/docs,null,STOPPED}
+[2026-03-27 16:29:17] INFO   Serval version 4.1.1 - Build: 1356, commit: 31bef7f, on: 2025/09/04 07:51
+[2026-03-27 16:29:17] INFO   WebSocketHandler instantiated with Serval instance
+[2026-03-27 16:29:17] INFO   Attempting reconnect...
+[2026-03-27 16:29:17] INFO   Successfully connected to /192.168.100.10:50000.
+[2026-03-27 16:29:17] INFO   Connection to /192.168.100.10:50001 failed
+[2026-03-27 16:29:17] INFO   Connection to /192.168.100.10:50051 failed
+[2026-03-27 16:29:17] INFO   Connection to /127.0.0.1:50000 failed
+[2026-03-27 16:29:17] INFO   Connection to /127.0.0.1:50001 failed
+[2026-03-27 16:29:17] INFO   Connection to /127.0.0.1:50051 failed
+[2026-03-27 16:29:18] INFO   jetty-11.0.14; built: 2023-02-22T23:41:48.575Z; git: 4601fe8dd805ce75b69c64466c115a162586641b; jvm 21.0.10+7-Ubuntu-124.04
+[2026-03-27 16:29:18] INFO   Started o.e.j.s.h.ContextHandler@6831d8fd{/docs,null,AVAILABLE}
+[2026-03-27 16:29:18] INFO   WebSocketHandler instantiated with Serval instance
+[2026-03-27 16:29:19] INFO   Softw: 24112500
+[2026-03-27 16:29:19] INFO   deviceMask 15
+[2026-03-27 16:29:19] ERROR  Could not instantiate SpidrInterface
+java.lang.IllegalStateException: No chips found. Please restart the detector.
+	at com.amscins.medipix.ChipSet.<init>(ChipSet.java:54) ~[serval-4.1.1.jar:?]
+	at com.amscins.spidr.SpidrInterface.<init>(SpidrInterface.java:116) ~[serval-4.1.1.jar:?]
+	at com.amscins.spidr.SpidrInterface.<init>(SpidrInterface.java:89) ~[serval-4.1.1.jar:?]
+	at com.amscins.Serval.connect(Serval.java:168) ~[serval-4.1.1.jar:?]
+	at com.amscins.Serval.lambda$new$0(Serval.java:126) ~[serval-4.1.1.jar:?]
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:572) ~[?:?]
+	at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:358) ~[?:?]
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:305) ~[?:?]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144) ~[?:?]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642) ~[?:?]
+	at java.lang.Thread.run(Thread.java:1583) [?:?]
+[2026-03-27 16:29:19] WARN   Failed to reconnect to detector: No chips found. Please restart the detector.
+[2026-03-27 16:29:20] INFO   Started o.e.j.s.ServletContextHandler@5ef6fd7f{/,null,AVAILABLE}
+[2026-03-27 16:29:20] INFO   Started ServerConnector@2d6764b2{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
+[2026-03-27 16:29:20] INFO   Started Server@213e3629{STARTING}[11.0.14,sto=0] @3299ms
+[2026-03-27 16:29:24] INFO   Attempting reconnect...
+[2026-03-27 16:29:24] INFO   Successfully connected to /192.168.100.10:50000.
+[2026-03-27 16:29:24] INFO   Connection to /192.168.100.10:50001 failed
+[2026-03-27 16:29:24] INFO   Connection to /192.168.100.10:50051 failed
+[2026-03-27 16:29:24] INFO   Connection to /127.0.0.1:50000 failed
+[2026-03-27 16:29:24] INFO   Connection to /127.0.0.1:50001 failed
+[2026-03-27 16:29:24] INFO   Connection to /127.0.0.1:50051 failed
+[2026-03-27 16:29:25] INFO   Softw: 24112500
+[2026-03-27 16:29:25] INFO   deviceMask 15
+[2026-03-27 16:29:25] INFO   Number of Cores: 24
+[2026-03-27 16:29:25] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:29:26] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:29:28] INFO   Get PLL Config 0 -> 001e
+[2026-03-27 16:29:28] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:29:29] INFO   Size of UDP Receiver buffer: 26214400
+[2026-03-27 16:29:29] WARN   UDPReceiver channel 0 could not set RcvBuf Size 26214400. Current size: 212992
+Please increase with: sudo  sysctl -w net.core.rmem_max=26214400
+sudo  sysctl -w net.core.rmem_default=26214400
+[2026-03-27 16:29:29] INFO   Counted 1 packets
+[2026-03-27 16:29:29] INFO   Counted 1 packets
+[2026-03-27 16:29:29] INFO   Already IDLE
+[2026-03-27 16:29:29] INFO   Chip 0 TOA corrections for 1 phases: [97, -16, 98, -16, 99, -16, 100, -16, 101, -16]
+[2026-03-27 16:29:30] INFO   Chip temps: 52 0 0 0
+[2026-03-27 16:29:30] INFO   ============= Run Nic Tuning =============
+[2026-03-27 16:29:30] INFO   Detector is connected to network interface: <name> = ens2 <HostAddress> = /192.168.100.1 <MTU> = 9000 <isLoopback> = false <isUp> = true
+[2026-03-27 16:29:30] WARN   Could not find a nictune file at: [./nictune.sh, /usr/share/asi/serval/nictune.sh]
+[2026-03-27 16:29:32] INFO   Stopped Server@213e3629{STOPPING}[11.0.14,sto=0]
+[2026-03-27 16:29:32] INFO   Stopped ServerConnector@2d6764b2{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
+[2026-03-27 16:29:32] INFO   Stopped o.e.j.s.ServletContextHandler@5ef6fd7f{/,null,STOPPED}
+[2026-03-27 16:29:32] INFO   Stopped o.e.j.s.h.ContextHandler@6831d8fd{/docs,null,STOPPED}

@@ -1,11 +1,13 @@
 """
-Integration test for start/stop message functionality.
+Integration test for the ZMQ control plane used by the Operator UI.
 
-This test verifies that:
-1. Start messages are sent when data arrives
-2. Event messages are sent for each flush
-3. Stop messages are sent on shutdown
-4. Messages can be received and parsed correctly
+``splash_timepix.ui.main`` relies on:
+
+- ``start`` / ``event`` / ``stop`` messages on the data PUB socket (port 5657 by default).
+- The subscriber connecting before the data source starts (ZMQ slow joiner).
+
+A single end-to-end test exercises that path with **dynamic ports** so tests can run
+in parallel and avoid collisions with a developer's local UI session.
 """
 
 import subprocess
@@ -19,66 +21,62 @@ import pytest
 import zmq
 
 from splash_timepix.schemas import TimePixEvent, TimePixStart, TimePixStop
+from tests.port_utils import get_free_port
 
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestStartStopMessages:
-    """Integration tests for start/stop message flow."""
+def test_simulator_pipeline_delivers_start_and_flush_events():
+    """Server + simulator subprocesses: start message, event payloads, schema fields."""
+    repo_root = Path(__file__).resolve().parent.parent
+    tcp_port = get_free_port()
+    zmq_port = get_free_port()
+    hb_port = get_free_port()
 
-    @pytest.fixture
-    def server_process(self):
-        """Start the server in a subprocess."""
-        cmd = [
-            sys.executable,
-            "-m",
-            "splash_timepix.app",
-            "--tdc-frequency",
-            "10",
-            "--flush-interval",
-            "1.0",
-            "--zmq-port",
-            "5657",
-            "--exit-on-disconnect",
-        ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=Path(__file__).parent.parent,
-        )
-        # Give server time to start up, bind ports, and complete ZMQ slow joiner sleep
-        time.sleep(2.0)
-        yield proc
-        # Cleanup
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+    server_cmd = [
+        sys.executable,
+        "-m",
+        "splash_timepix.app",
+        "--host",
+        "localhost",
+        "--port",
+        str(tcp_port),
+        "--zmq-port",
+        str(zmq_port),
+        "--heartbeat-port",
+        str(hb_port),
+        "--tdc-frequency",
+        "10",
+        "--flush-interval",
+        "1.0",
+        "--exit-on-disconnect",
+    ]
+    server_proc = subprocess.Popen(
+        server_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        cwd=repo_root,
+    )
 
-    @pytest.fixture
-    def zmq_socket(self, server_process):
-        """Create ZMQ socket connected to server - must come BEFORE simulator starts."""
-        context = zmq.Context()
-        socket = context.socket(zmq.SUB)
-        socket.connect("tcp://localhost:5657")
-        socket.setsockopt(zmq.SUBSCRIBE, b"")
-        # Give subscription time to establish
-        time.sleep(0.3)
-        yield socket
-        # Cleanup
-        socket.close()
-        context.term()
+    ctx = zmq.Context()
+    socket_sub = ctx.socket(zmq.SUB)
+    try:
+        time.sleep(2.2)
+        if server_proc.poll() is not None:
+            err = server_proc.stderr.read().decode(errors="replace") if server_proc.stderr else ""
+            pytest.fail(f"server exited early: {err}")
 
-    @pytest.fixture
-    def simulator_process(self):
-        """Start the simulator in a subprocess."""
-        cmd = [
+        socket_sub.connect(f"tcp://127.0.0.1:{zmq_port}")
+        socket_sub.setsockopt(zmq.SUBSCRIBE, b"")
+        time.sleep(0.35)
+
+        sim_cmd = [
             sys.executable,
             "-m",
             "splash_timepix.simulator_cli",
             "--auto-start",
+            "--port",
+            str(tcp_port),
             "--tdc-frequency",
             "10",
             "--cps",
@@ -87,168 +85,82 @@ class TestStartStopMessages:
             "5",
             "--no-count",
         ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
+        sim_proc = subprocess.Popen(
+            sim_cmd,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            cwd=Path(__file__).parent.parent,
+            cwd=repo_root,
         )
-        yield proc
-        # Cleanup
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
-    def test_receive_start_message(self, zmq_socket, simulator_process):
-        """Test that start message is received."""
-        socket = zmq_socket
-
-        # Wait for start message
         start_received = False
-        timeout = time.time() + 10
+        events_received = []
+        deadline = time.time() + 25.0
 
-        while time.time() < timeout:
+        while time.time() < deadline and len(events_received) < 2:
+            socket_sub.setsockopt(zmq.RCVTIMEO, 4000)
             try:
-                # Set a shorter timeout for this specific recv
-                socket.setsockopt(zmq.RCVTIMEO, 5000)
-                metadata_bytes = socket.recv()
-                metadata = msgpack.unpackb(metadata_bytes)
-                msg_type = metadata.get("msg_type")
-
-                # Control messages are single-part, data messages are multi-part
-                is_data_message = msg_type != "start" and msg_type != "stop"
-
-                if is_data_message:
-                    # Consume the array part to keep stream in sync
-                    socket.setsockopt(zmq.RCVTIMEO, 1000)
-                    try:
-                        socket.recv()  # Discard array data
-                    except zmq.Again:
-                        pass
-                    continue
-
-                if metadata.get("msg_type") == "start":
-                    # Validate schema
-                    start_msg = TimePixStart(**metadata)
-                    assert start_msg.scan_name is not None
-                    assert start_msg.tdc_frequency_hz == 10.0
-                    assert start_msg.detector_size_x > 0
-                    assert start_msg.detector_size_y > 0
-                    start_received = True
-                    break
+                metadata_bytes = socket_sub.recv()
             except zmq.Again:
                 continue
-            except Exception as e:
-                print(f"Error receiving message: {e}")
-                raise
+            metadata = msgpack.unpackb(metadata_bytes)
+            msg_type = metadata.get("msg_type")
+            is_data_message = msg_type not in ("start", "stop")
+
+            if msg_type == "start":
+                start_msg = TimePixStart(**metadata)
+                assert start_msg.scan_name
+                assert start_msg.tdc_frequency_hz == 10.0
+                assert start_msg.detector_size_x > 0
+                assert start_msg.detector_size_y > 0
+                for field in (
+                    "scan_name",
+                    "tdc_frequency_hz",
+                    "detector_size_x",
+                    "detector_size_y",
+                ):
+                    assert field in metadata
+                start_received = True
+                continue
+
+            if msg_type == "stop":
+                continue
+
+            if is_data_message:
+                socket_sub.setsockopt(zmq.RCVTIMEO, 2000)
+                try:
+                    array_bytes = socket_sub.recv()
+                except zmq.Again:
+                    continue
+                shape = tuple(metadata["shape"])
+                dtype = metadata["dtype"]
+                array = np.frombuffer(array_bytes, dtype=dtype).reshape(shape)
+                assert array.shape == shape
+                assert array.dtype == np.dtype(dtype)
+                events_received.append(
+                    {
+                        "flush_number": metadata.get("flush_number"),
+                        "shape": shape,
+                        "total_counts": float(np.sum(array)),
+                    }
+                )
+
+        sim_proc.terminate()
+        try:
+            sim_proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            sim_proc.kill()
 
         assert start_received, "Start message not received within timeout"
-
-    def test_receive_event_messages(self, zmq_socket, simulator_process):
-        """Test that event messages are received."""
-        socket = zmq_socket
-
-        events_received = []
-        timeout = time.time() + 10
-        start_received = False
-
-        while time.time() < timeout:
-            try:
-                socket.setsockopt(zmq.RCVTIMEO, 5000)
-                metadata_bytes = socket.recv()
-                metadata = msgpack.unpackb(metadata_bytes)
-                msg_type = metadata.get("msg_type")
-
-                # Control messages are single-part, data messages are multi-part
-                is_data_message = msg_type != "start" and msg_type != "stop"
-
-                if msg_type == "start":
-                    start_received = True
-                    continue
-
-                # Event messages - receive array data
-                if is_data_message:
-                    # Try to receive array data
-                    socket.setsockopt(zmq.RCVTIMEO, 1000)
-                    try:
-                        array_bytes = socket.recv()
-
-                        # Reconstruct array
-                        shape = tuple(metadata["shape"])
-                        dtype = metadata["dtype"]
-                        array = np.frombuffer(array_bytes, dtype=dtype).reshape(shape)
-
-                        # Validate it's a valid array
-                        assert array.shape == shape
-                        assert array.dtype == dtype
-
-                        events_received.append(
-                            {
-                                "flush_number": metadata.get("flush_number"),
-                                "shape": shape,
-                                "total_counts": np.sum(array),
-                            }
-                        )
-
-                        if len(events_received) >= 2:  # Got enough events
-                            break
-                    except zmq.Again:
-                        continue
-            except zmq.Again:
-                continue
-
-        assert start_received, "Start message not received"
-        assert len(events_received) >= 1, f"Expected at least 1 event, got {len(events_received)}"
-        assert all(e["flush_number"] is not None for e in events_received), "Events missing flush_number"
-
-    def test_message_format(self, zmq_socket, simulator_process):
-        """Test that messages have correct format."""
-        socket = zmq_socket
-
-        messages = []
-        timeout = time.time() + 10
-
-        while time.time() < timeout and len(messages) < 5:
-            try:
-                socket.setsockopt(zmq.RCVTIMEO, 5000)
-                metadata_bytes = socket.recv()
-                metadata = msgpack.unpackb(metadata_bytes)
-                msg_type = metadata.get("msg_type")
-
-                # Control messages are single-part, data messages are multi-part
-                is_data_message = msg_type != "start" and msg_type != "stop"
-
-                if msg_type == "start":
-                    messages.append(("start", metadata))
-                elif msg_type == "stop":
-                    messages.append(("stop", metadata))
-                elif is_data_message:
-                    # Try to get array
-                    socket.setsockopt(zmq.RCVTIMEO, 1000)
-                    try:
-                        array_bytes = socket.recv()
-                        messages.append(("event", metadata, len(array_bytes)))
-                    except zmq.Again:
-                        continue
-            except zmq.Again:
-                continue
-
-        # Verify we got at least a start message
-        start_msgs = [m for m in messages if m[0] == "start"]
-        assert len(start_msgs) >= 1, "Should receive at least one start message"
-
-        # Verify start message has required fields
-        start_metadata = start_msgs[0][1]
-        required_fields = [
-            "scan_name",
-            "tdc_frequency_hz",
-            "detector_size_x",
-            "detector_size_y",
-        ]
-        for field in required_fields:
-            assert field in start_metadata, f"Start message missing field: {field}"
+        assert len(events_received) >= 1, f"Expected at least one flush event, got {events_received!r}"
+        assert all(e["flush_number"] is not None for e in events_received)
+    finally:
+        server_proc.terminate()
+        try:
+            server_proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+        socket_sub.close()
+        ctx.term()
 
 
 @pytest.mark.unit

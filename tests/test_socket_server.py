@@ -1,7 +1,8 @@
-"""Integration tests for the SocketDataServer (NumPy batch path).
+"""Tests for ``SocketDataServer`` TCP ingest and batch parsing.
 
-Tests the multi-threaded socket server that receives and parses
-TimePix3 packets using realistic simulator data.
+These focus on the packet path that feeds ``splash_timepix.app`` (live-cli → TCP →
+parser → callback). For the full UI-style pipeline (ZMQ + heartbeat + disconnect),
+see ``test_main_workflow.py`` and ``test_start_stop_messages.py``.
 """
 
 import socket
@@ -17,52 +18,6 @@ from splash_timepix.socket_server import SocketDataServer
 
 def _batch_total_packets(r: BatchParseResult) -> int:
     return r.n_pixels + r.n_tdc + r.n_control
-
-
-def get_free_port():
-    """Get a free port from the OS."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.listen(1)
-        port = s.getsockname()[1]
-    return port
-
-
-@pytest.fixture
-def test_port():
-    """Get a free port for each test."""
-    return get_free_port()
-
-
-@pytest.fixture
-def server(test_port):
-    """Create a server instance for testing."""
-    srv = SocketDataServer(
-        host="localhost",
-        port=test_port,
-        buffer_size=100,
-        debug=False,
-        callback_batch_size=10,  # Small batch for faster testing
-    )
-    yield srv
-
-    # Cleanup
-    if srv.running:
-        srv.stop()
-
-    # Give OS time to release the port
-    time.sleep(0.2)
-
-
-@pytest.fixture
-def simulator():
-    """Create a simulator with test-friendly settings."""
-    config = SimulatorConfig(
-        pixel_count_rate=1000,  # 1 kHz
-        tdc_frequency=10.0,  # 10 Hz
-        include_control_packets=False,
-    )
-    return PacketSimulator(config)
 
 
 class TestServerLifecycle:

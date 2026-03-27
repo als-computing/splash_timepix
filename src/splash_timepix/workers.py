@@ -432,6 +432,29 @@ def zmq_worker(
             except Exception as e:
                 logger.error(f"Error in ZMQ worker: {e}", exc_info=True)
 
+        # stop_event can flip true while we are blocked on xyt_queue.get(); then we leave
+        # the loop without running the control-message branch. Drain the queue so stop
+        # reaches subscribers before the PUB socket closes.
+        if message_queue is not None:
+            while True:
+                try:
+                    control_message = message_queue.get_nowait()
+                    message_bytes = msgpack.packb(control_message)
+                    try:
+                        socket.send(message_bytes, zmq.DONTWAIT)
+                        msg_type = control_message.get("msg_type", "unknown")
+                        logger.info(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")
+                        print(
+                            f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}"
+                        )
+                    except zmq.Again:
+                        msg_type = control_message.get("msg_type", "control")
+                        logger.warning(f"ZMQ send would block, dropping {msg_type} message")
+                        print(f"WARNING: ZMQ send would block, dropping {msg_type} message")
+                    message_queue.task_done()
+                except queue.Empty:
+                    break
+
         logger.info(f"ZMQ worker published {flush_count} flushes total")
 
     except Exception as e:

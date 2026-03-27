@@ -133,6 +133,30 @@ class SocketDataServer:
 
         logger.info(f"Server started on {self.host}:{self.port}")
 
+    def _wakeup_listener_accept(self) -> None:
+        """Ensure ``accept()`` returns so the listener thread can exit.
+
+        On some platforms, closing the listening socket from another thread does not
+        interrupt ``accept()`` promptly; connecting to our own port always unblocks it.
+        """
+        addr = (self.host, self.port)
+        if self.host in ("0.0.0.0", ""):
+            addr = ("127.0.0.1", self.port)
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.1)
+                probe.connect(addr)
+                return
+            except OSError:
+                time.sleep(0.02)
+            finally:
+                try:
+                    probe.close()
+                except OSError:
+                    pass
+
     def stop(self) -> None:
         """Stop the server and all threads."""
         if not self.running:
@@ -141,14 +165,20 @@ class SocketDataServer:
 
         self.running = False
 
+        # Unblock accept() before closing the listen socket (order matters on some OSes).
+        self._wakeup_listener_accept()
+
         if self.server_socket:
-            self.server_socket.close()
+            try:
+                self.server_socket.close()
+            except OSError:
+                pass
 
         if self.socket_thread and self.socket_thread.is_alive():
-            self.socket_thread.join(timeout=5)
+            self.socket_thread.join(timeout=2)
 
         if self.processor_thread and self.processor_thread.is_alive():
-            self.processor_thread.join(timeout=5)
+            self.processor_thread.join(timeout=2)
 
         logger.info("Server stopped")
 
@@ -288,8 +318,8 @@ class SocketDataServer:
 
         while self.running or not self.message_queue.empty():
             try:
-                # Get a batch of bytes
-                batch_bytes = self.message_queue.get(timeout=1.0)
+                # Short timeout so stop() does not wait ~1s when the queue is idle.
+                batch_bytes = self.message_queue.get(timeout=0.1)
 
                 # Parse entire batch at once with NumPy
                 result = self.parser.parse_batch(batch_bytes)
