@@ -13821,3 +13821,71 @@ sudo  sysctl -w net.core.rmem_default=26214400
 [2026-03-27 15:38:38] INFO   Stopped ServerConnector@67304a40{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
 [2026-03-27 15:38:38] INFO   Stopped o.e.j.s.ServletContextHandler@5e1d03d7{/,null,STOPPED}
 [2026-03-27 15:38:38] INFO   Stopped o.e.j.s.h.ContextHandler@a23a01d{/docs,null,STOPPED}
+[2026-03-27 16:05:13] INFO   Serval version 4.1.1 - Build: 1356, commit: 31bef7f, on: 2025/09/04 07:51
+[2026-03-27 16:05:13] INFO   WebSocketHandler instantiated with Serval instance
+[2026-03-27 16:05:13] INFO   Attempting reconnect...
+[2026-03-27 16:05:13] INFO   Connection to /127.0.0.1:50000 failed
+[2026-03-27 16:05:13] INFO   Connection to /127.0.0.1:50001 failed
+[2026-03-27 16:05:13] INFO   Connection to /127.0.0.1:50051 failed
+[2026-03-27 16:05:13] INFO   Connection to /127.0.0.1:50000 failed
+[2026-03-27 16:05:13] INFO   Connection to /127.0.0.1:50001 failed
+[2026-03-27 16:05:13] INFO   Connection to /127.0.0.1:50051 failed
+[2026-03-27 16:05:14] INFO   jetty-11.0.14; built: 2023-02-22T23:41:48.575Z; git: 4601fe8dd805ce75b69c64466c115a162586641b; jvm 21.0.10+7-Ubuntu-124.04
+[2026-03-27 16:05:14] INFO   Started o.e.j.s.h.ContextHandler@7561db12{/docs,null,AVAILABLE}
+[2026-03-27 16:05:14] INFO   WebSocketHandler instantiated with Serval instance
+[2026-03-27 16:05:14] WARN   Failed to reconnect to detector: Cannot get version because UNAVAILABLE: io exception
+[2026-03-27 16:05:15] INFO   Started o.e.j.s.ServletContextHandler@48d293ee{/,null,AVAILABLE}
+[2026-03-27 16:05:15] INFO   Started ServerConnector@67304a40{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
+[2026-03-27 16:05:15] INFO   Started Server@70eecdc2{STARTING}[11.0.14,sto=0] @3363ms
+[2026-03-27 16:05:19] INFO   Attempting reconnect...
+[2026-03-27 16:05:19] INFO   Successfully connected to /192.168.100.10:50000.
+[2026-03-27 16:05:19] INFO   Connection to /192.168.100.10:50001 failed
+[2026-03-27 16:05:19] INFO   Connection to /192.168.100.10:50051 failed
+[2026-03-27 16:05:19] INFO   Connection to /127.0.0.1:50000 failed
+[2026-03-27 16:05:19] INFO   Connection to /127.0.0.1:50001 failed
+[2026-03-27 16:05:19] INFO   Connection to /127.0.0.1:50051 failed
+[2026-03-27 16:05:19] INFO   Softw: 24112500
+[2026-03-27 16:05:19] INFO   deviceMask 15
+[2026-03-27 16:05:19] INFO   Number of Cores: 24
+[2026-03-27 16:05:19] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:05:21] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:05:23] INFO   Get PLL Config 0 -> 001e
+[2026-03-27 16:05:23] INFO   Target size of data resource pool: 262144
+[2026-03-27 16:05:24] INFO   Size of UDP Receiver buffer: 26214400
+[2026-03-27 16:05:24] WARN   UDPReceiver channel 0 could not set RcvBuf Size 26214400. Current size: 212992
+Please increase with: sudo  sysctl -w net.core.rmem_max=26214400
+sudo  sysctl -w net.core.rmem_default=26214400
+[2026-03-27 16:05:24] INFO   Counted 1 packets
+[2026-03-27 16:05:24] INFO   Counted 1 packets
+[2026-03-27 16:05:24] INFO   Already IDLE
+[2026-03-27 16:05:25] INFO   Chip 0 TOA corrections for 1 phases: [97, -16, 98, -16, 99, -16, 100, -16, 101, -16]
+[2026-03-27 16:05:25] INFO   Chip temps: 51 0 0 0
+[2026-03-27 16:05:25] INFO   ============= Run Nic Tuning =============
+[2026-03-27 16:05:25] INFO   Detector is connected to network interface: <name> = ens2 <HostAddress> = /192.168.100.1 <MTU> = 9000 <isLoopback> = false <isUp> = true
+[2026-03-27 16:05:25] WARN   Could not find a nictune file at: [./nictune.sh, /usr/share/asi/serval/nictune.sh]
+[2026-03-27 16:05:36] INFO   Chip temps: 51 0 0 0
+[2026-03-27 16:05:38] INFO   ===================== Prepare measurement ===================
+[2026-03-27 16:05:38] INFO   Number of file writers: 1
+[2026-03-27 16:05:38] INFO   Number of raw writers: 2
+[2026-03-27 16:05:38] INFO   Enabled heartbeat with a 1.0s period.
+[2026-03-27 16:05:38] INFO   Size of ring buffer: 128
+[2026-03-27 16:05:38] INFO   Size of UDP Disruptor: 262144
+[2026-03-27 16:05:38] INFO   Number of frame assemblers: 8
+[2026-03-27 16:05:38] INFO   Using sequence headers.
+[2026-03-27 16:05:38] INFO   Number of UDP receivers: 1
+[2026-03-27 16:05:38] INFO   Size of UDP Receiver buffer: 26214400
+[2026-03-27 16:05:38] INFO   Size of image pool: 68
+[2026-03-27 16:05:38] INFO   Size of integration image pool: 34
+[2026-03-27 16:05:38] INFO   ===================== Start measurement =====================
+nTriggers: 60, Trigger FPS: 1.0, Exposure (ms): 1000.0
+[2026-03-27 16:05:38] WARN   UDPReceiver channel 0 could not set RcvBuf Size 26214400. Current size: 212992
+Please increase with: sudo  sysctl -w net.core.rmem_max=26214400
+sudo  sysctl -w net.core.rmem_default=26214400
+[2026-03-27 16:05:45] INFO   Counted 22 packets
+[2026-03-27 16:05:45] INFO   Counted 22 packets
+[2026-03-27 16:05:45] INFO   Processed 6 frames and dropped 0 frames.
+[2026-03-27 16:05:45] INFO   ===================== End measurement ======================
+[2026-03-27 16:05:54] INFO   Stopped Server@70eecdc2{STOPPING}[11.0.14,sto=0]
+[2026-03-27 16:05:54] INFO   Stopped ServerConnector@67304a40{HTTP/1.1, (http/1.1)}{0.0.0.0:8080}
+[2026-03-27 16:05:54] INFO   Stopped o.e.j.s.ServletContextHandler@48d293ee{/,null,STOPPED}
+[2026-03-27 16:05:54] INFO   Stopped o.e.j.s.h.ContextHandler@7561db12{/docs,null,STOPPED}

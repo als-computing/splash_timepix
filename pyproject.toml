@@ -40,8 +40,6 @@ test = ["pytest", "pytest-cov", "coverage"]
 
 [project.scripts]
 tpx-stream = "splash_timepix.app:app"
-tpx-acq = "splash_timepix.acquisition_start:app"
-tpx-stop = "splash_timepix.acquisition_stop:app"
 tpx-ui = "splash_timepix.ui.main:main"
 tpx-sim = "splash_timepix.simulator_cli:app"
 

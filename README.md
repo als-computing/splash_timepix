@@ -84,11 +84,13 @@ Simulated TimePix3 data source for testing:
 
 ## Quick Start - Basic Usage Examples
 
+The package installs **`tpx-stream`** as the console entry point for the streaming app (see `pyproject.toml`); `python -m splash_timepix.app` is equivalent.
+
 ### Production Mode (ZMQ Publishing)
 
 **Terminal 1** - Start server:
 ```bash
-splash-timepix
+tpx-stream
 # OR via
 python -m splash_timepix.app
 ```
@@ -96,7 +98,7 @@ python -m splash_timepix.app
 **Terminal 2** - Subscribe to published data:
 ```bash
 # Use (or modify) the example
-python example_zmq_subscriber.py
+python -m splash_timepix.example_zmq_sub
 # OR connect with your application
 ```
 
@@ -109,7 +111,7 @@ python example_zmq_subscriber.py
 
 **Terminal 1** - Start server with visualization:
 ```bash
-splash_timepix --plot
+tpx-stream --plot
 ```
 
 **Terminal 2** - Start data source:
@@ -126,7 +128,7 @@ python -m splash_timepix.simulator_cli
 
 **Terminal 1** - Start server with verbose output
 ```bash
-splash_timepix --verbose
+tpx-stream --verbose
 ```
 
 **Terminal 2**
