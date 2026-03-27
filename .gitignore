@@ -13,3 +13,6 @@ venv/
 .nox
 .cache
 /.venv/
+
+# ASI application logs
+ASI/logs/
