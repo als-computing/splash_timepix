@@ -446,7 +446,12 @@ class ProcessManager(QObject):
         logger.info(f"Starting process {name}: {program} {' '.join(args)}")
         proc.start(program, args)
 
-        return proc.waitForStarted(5000)
+        if not proc.waitForStarted(5000):
+            logger.error(f"Failed to start {name}: {proc.errorString()}")
+            del self.processes[name]
+            proc.deleteLater()
+            return False
+        return True
 
     def _on_started(self, name: str) -> None:
         logger.info(f"Process started: {name}")

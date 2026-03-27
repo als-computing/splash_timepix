@@ -10,6 +10,11 @@ from .widgets import TerminalWidget
 
 logger = logging.getLogger(__name__)
 
+# Map QProcess names to terminal keys (simulator shares the source panel with live-cli).
+_PROCESS_TO_TERMINAL = {
+    "simulator": "live-cli",
+}
+
 
 class EngineeringTab(QWidget):
     """Engineering interface tab with 2x3 terminal grid.
@@ -59,7 +64,7 @@ class EngineeringTab(QWidget):
         # Row 1
         self._terminals["serval"] = TerminalWidget("Serval Server")
         self._terminals["streaming"] = TerminalWidget("Streaming Server (app.py)")
-        self._terminals["live-cli"] = TerminalWidget("live-cli")
+        self._terminals["live-cli"] = TerminalWidget("live-cli / simulator")
 
         grid.addWidget(self._terminals["serval"], 0, 0)
         grid.addWidget(self._terminals["streaming"], 0, 1)
@@ -74,6 +79,8 @@ class EngineeringTab(QWidget):
         grid.addWidget(self._terminals["zmq-backend"], 1, 1)
         grid.addWidget(self._terminals["system"], 1, 2)
 
+        self._terminals["system"].set_status("logs", False)
+
         for i in range(3):
             grid.setColumnStretch(i, 1)
         for i in range(2):
@@ -86,10 +93,14 @@ class EngineeringTab(QWidget):
             terminal.clear()
         self.clear_logs_requested.emit()
 
+    def _terminal_key(self, process_name: str) -> str:
+        return _PROCESS_TO_TERMINAL.get(process_name, process_name)
+
     @Slot(str, str)
     def append_output(self, process_name: str, text: str):
-        if process_name in self._terminals:
-            self._terminals[process_name].append_text(text)
+        key = self._terminal_key(process_name)
+        if key in self._terminals:
+            self._terminals[key].append_text(text)
         else:
             self._terminals["system"].append_text(f"[{process_name}] {text}")
 
@@ -103,15 +114,23 @@ class EngineeringTab(QWidget):
 
     @Slot(str, bool)
     def set_process_status(self, process_name: str, running: bool):
-        if process_name in self._terminals:
+        key = self._terminal_key(process_name)
+        if key in self._terminals:
             status = "running" if running else "stopped"
-            self._terminals[process_name].set_status(status, running)
+            self._terminals[key].set_status(status, running)
+        self._update_status_summary()
+
+    def set_zmq_thread_status(self, state: str) -> None:
+        """ZMQ subscriber thread lifecycle: not running | running | stopped."""
+        term = self._terminals["zmq-backend"]
+        term.set_status(state, state == "running")
         self._update_status_summary()
 
     def _update_status_summary(self):
         running = []
         for name, terminal in self._terminals.items():
-            if terminal._status_label.text() == "running":
+            text = terminal._status_label.text().lower()
+            if text == "running":
                 running.append(name)
 
         if running:
