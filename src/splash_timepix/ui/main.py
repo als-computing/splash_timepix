@@ -490,6 +490,24 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close - cleanup workers and processes."""
+        if self._acquiring or self._waiting_for_streaming_ready:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Acquisition in progress")
+            msg.setText("Acquisition or startup is still running.")
+            msg.setInformativeText(
+                "Use Stop on the Operator tab first when you want a clean stop and saved outputs "
+                "(where applicable).\n\n"
+                "Closing the window now will terminate all streaming and related processes immediately."
+            )
+            stay = msg.addButton("Stay", QMessageBox.ButtonRole.RejectRole)
+            close_anyway = msg.addButton("Close anyway", QMessageBox.ButtonRole.DestructiveRole)
+            msg.setDefaultButton(stay)
+            msg.exec()
+            if msg.clickedButton() != close_anyway:
+                event.ignore()
+                return
+
         logger.info("Closing application...")
 
         self._waiting_for_streaming_ready = False
