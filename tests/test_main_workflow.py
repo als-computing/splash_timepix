@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 
 import msgpack
-import numpy as np
 import pytest
 import zmq
 

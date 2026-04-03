@@ -542,7 +542,8 @@ def main():
     app.setStyle("Fusion")
 
     # Apply base dark theme stylesheet
-    app.setStyleSheet(f"""
+    app.setStyleSheet(
+        f"""
         QMainWindow, QWidget {{
             background-color: {theme.BG_PANEL};
             color: {theme.TEXT_PRIMARY};
@@ -604,7 +605,8 @@ def main():
             border: 1px solid {theme.BORDER_SUBTLE};
             padding: 4px;
         }}
-    """)
+    """
+    )
 
     window = MainWindow(autostart_serval=autostart_serval)
     window.show()

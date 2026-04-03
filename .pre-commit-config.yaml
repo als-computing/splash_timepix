@@ -53,6 +53,21 @@ repos:
       - id: flake8
         description: Lint Python code with flake8
 
+  # Default pytest suite (addopts / config from pyproject only — no -m override). CI uses
+  # `pytest -m ""` to force full collection independent of future addopts marker defaults.
+  # Editable install: pre-commit does not install the repo into hook venvs.
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        language: system
+        entry: bash
+        args:
+          - -c
+          - 'python -m pip install -q -e ".[dev,test]" && python -m pytest'
+        pass_filenames: false
+        always_run: true
+
 # Configuration for CI mode
 ci:
   autofix_commit_msg: |

@@ -9,8 +9,7 @@ __pycache__/
 *~
 venv/
 
-# due to using nox and pytest
-.nox
+# pytest / tooling
 .cache
 /.venv/
 

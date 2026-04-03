@@ -20,7 +20,6 @@ import typer
 
 from splash_timepix.heartbeat import HeartbeatPublisher, ServerState
 from splash_timepix.schemas import TimePixStart, TimePixStop
-
 from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.socket_server import RingBufferHandler, SocketDataServer
 from splash_timepix.workers import input_listener, plotting_worker, zmq_worker

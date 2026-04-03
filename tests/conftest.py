@@ -6,7 +6,6 @@ import pytest
 
 from splash_timepix.simulator import PacketSimulator, SimulatorConfig
 from splash_timepix.socket_server import SocketDataServer
-
 from tests.port_utils import get_free_port
 
 

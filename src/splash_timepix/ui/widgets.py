@@ -419,12 +419,14 @@ class TerminalWidget(QWidget):
         layout.setSpacing(0)
 
         title_bar = QFrame()
-        title_bar.setStyleSheet(f"""
+        title_bar.setStyleSheet(
+            f"""
             background-color: {theme.BG_WIDGET};
             border-radius: 4px 4px 0 0;
             border: 1px solid {theme.BORDER_SUBTLE};
             border-bottom: none;
-        """)
+        """
+        )
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(8, 4, 8, 4)
 

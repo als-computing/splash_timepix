@@ -444,9 +444,7 @@ def zmq_worker(
                         socket.send(message_bytes, zmq.DONTWAIT)
                         msg_type = control_message.get("msg_type", "unknown")
                         logger.info(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")
-                        print(
-                            f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}"
-                        )
+                        print(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")
                     except zmq.Again:
                         msg_type = control_message.get("msg_type", "control")
                         logger.warning(f"ZMQ send would block, dropping {msg_type} message")

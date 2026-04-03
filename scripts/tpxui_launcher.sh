@@ -36,5 +36,5 @@ echo "  Starting UI with Serval autostart..."
 echo ""
 
 # Launch the UI with autostart-serval flag
-# python -m splash_timepix.ui.main 
+# python -m splash_timepix.ui.main
 python -m splash_timepix.ui.main --autostart-serval
