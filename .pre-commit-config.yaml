@@ -1,5 +1,8 @@
 # Pre-commit configuration for splash_timepix
 # See https://pre-commit.com for more information
+#
+# Linters and formatter versions: single source of truth in pyproject.toml [project.optional-dependencies.dev].
+# Hooks prefer ./.venv (pip install -e ".[dev]") and otherwise install editable deps (pre-commit.ci).
 
 repos:
   # Built-in pre-commit hooks
@@ -31,40 +34,23 @@ repos:
         description: Prevent giant files from being committed
         args: ['--maxkb=1000']
 
-  # Black - Python code formatter
-  - repo: https://github.com/psf/black
-    rev: 24.4.2
+  # black / isort / flake8 — versions from pyproject.toml via scripts/precommit_lint.sh
+  - repo: local
     hooks:
-      - id: black
-        description: Format Python code with Black
-        language_version: python3
+      - id: lint
+        name: black / isort / flake8
+        language: system
+        entry: bash scripts/precommit_lint.sh
+        pass_filenames: false
+        always_run: true
 
-  # isort - Import sorting
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        description: Sort Python imports
-
-  # flake8 - Python linting (basic checks only)
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.1.0
-    hooks:
-      - id: flake8
-        description: Lint Python code with flake8
-
-  # Default pytest suite (addopts / config from pyproject only — no -m override). CI uses
-  # `pytest -m ""` to force full collection independent of future addopts marker defaults.
-  # Editable install: pre-commit does not install the repo into hook venvs.
+  # Default pytest suite (addopts from pyproject only; CI uses pytest -m "" for full collection)
   - repo: local
     hooks:
       - id: pytest
         name: pytest
         language: system
-        entry: bash
-        args:
-          - -c
-          - 'python -m pip install -q -e ".[dev,test]" && python -m pytest'
+        entry: bash scripts/precommit_pytest.sh
         pass_filenames: false
         always_run: true
 

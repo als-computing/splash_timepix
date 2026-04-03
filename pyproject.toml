@@ -30,7 +30,15 @@ dependencies = ["numpy", "typer", "psutil", "opencv-python", "pyzmq", "msgpack",
 
 [project.optional-dependencies]
 ui = ["PySide6>=6.5.0",]
-dev = ["check-manifest", "pytest", "pre-commit", "black", "flake8", "isort"]
+# Pin linters to match .pre-commit-config.yaml (avoids CI vs local version drift).
+dev = [
+  "check-manifest",
+  "pytest",
+  "pre-commit",
+  "black==24.4.2",
+  "flake8==7.1.0",
+  "isort==5.13.2",
+]
 test = ["pytest", "pytest-cov", "coverage"]
 
 [project.urls]
