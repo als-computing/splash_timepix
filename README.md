@@ -31,6 +31,7 @@ pip install -e .[dev]
 - `msgpack` - Serialization for ZMQ
 - `typer` - CLI interface
 - `psutil` - System monitoring
+- `pydantic` - Message schema validation
 
 ## Configuration
 
@@ -46,11 +47,11 @@ pre-commit install
 The system consists of four main components:
 
 ### 1. Socket Server (`socket_server.py`)
-Multi-threaded TCP server that receives and parses 12-byte TimePix3 packets:
-- **Thread 1**: Socket listener (network I/O)
-- **Thread 2**: Packet parser (delivers to callback)
+Multi-threaded TCP server that receives 12-byte TimePix3 packets and parses them with NumPy (`parser`):
+- **Thread 1**: Socket listener (reads TCP chunks, batches complete packets into raw byte buffers)
+- **Thread 2**: Vectorized parser (`parse_batch`) → callback receives a `BatchParseResult` (arrays per packet type)
 
-See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for details.
+See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for details.
 
 ### 2. Main Application (`app.py`)
 Main application implementing time-resolved binning:
@@ -73,6 +74,7 @@ Two alternative workers for consuming 3D arrays:
 - Uses msgpack serialization
 - Multi-part messages (metadata + array bytes)
 - Supports multiple subscribers
+- Publishes start/stop control messages for acquisition lifecycle tracking
 
 ### 4. Simulated Source (`simulator_cli.py`)
 Simulated TimePix3 data source for testing:
@@ -82,11 +84,13 @@ Simulated TimePix3 data source for testing:
 
 ## Quick Start - Basic Usage Examples
 
+The package installs **`tpx-stream`** as the console entry point for the streaming app (see `pyproject.toml`); `python -m splash_timepix.app` is equivalent.
+
 ### Production Mode (ZMQ Publishing)
 
 **Terminal 1** - Start server:
 ```bash
-splash-timepix
+tpx-stream
 # OR via
 python -m splash_timepix.app
 ```
@@ -94,7 +98,7 @@ python -m splash_timepix.app
 **Terminal 2** - Subscribe to published data:
 ```bash
 # Use (or modify) the example
-python example_zmq_subscriber.py
+python -m splash_timepix.example_zmq_sub
 # OR connect with your application
 ```
 
@@ -107,7 +111,7 @@ python example_zmq_subscriber.py
 
 **Terminal 1** - Start server with visualization:
 ```bash
-splash_timepix --plot
+tpx-stream --plot
 ```
 
 **Terminal 2** - Start data source:
@@ -115,7 +119,7 @@ splash_timepix --plot
 # Using real detector
 ./ASI/live-cli_alpha-1/live-cli
 # OR replaying from file
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
 # OR using the simulator
 python -m splash_timepix.simulator_cli
 ```
@@ -124,7 +128,7 @@ python -m splash_timepix.simulator_cli
 
 **Terminal 1** - Start server with verbose output
 ```bash
-splash_timepix --verbose
+tpx-stream --verbose
 ```
 
 **Terminal 2**
@@ -140,7 +144,7 @@ cps 100000
 tdc 0.1
 start 60
 # OR (III) Using Replay From File (live-cli)
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3 
+./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
 ```
 
 ## Command-Line Options
@@ -181,17 +185,39 @@ After starting the test source, use these commands:
 - `stop` - Stop streaming data
 - `quit` - Exit
 
-## ZMQ Data Format
+## ZMQ Message Format
 
-Published arrays use a **multi-part message** format:
+The system publishes three types of messages via ZMQ:
+
+### 1. Start Message (Single-part)
+Published when data acquisition begins (first data arrives):
+```python
+{
+    'msg_type': 'start',
+    'scan_name': 'acquisition_20250112T160536Z_8b850728',
+    'tdc_frequency_hz': 10.0,
+    'detector_size_x': 256,
+    'detector_size_y': 256,
+    'n_bins': 350,
+    't_delta_ns': 285714.29,
+    # ... other configuration parameters
+}
+```
+
+### 2. Event Message (Multi-part)
+Published for each data flush:
 
 **Part 1: Metadata (msgpack)**
 ```python
 {
-    'shape': (256, 256, 100),     # Array dimensions
+    'msg_type': 'event',
+    'shape': (256, 256, 350),     # Array dimensions
     'dtype': 'uint32',             # Numpy dtype
     'timestamp': 1699999999.123,   # Unix timestamp
-    'array_count': 42              # Sequential counter
+    'flush_number': 1,             # Sequential flush number
+    'cycles_in_flush': 10,         # TDC cycles in this flush
+    'total_cycles': 10,            # Cumulative cycle count
+    # ... other metadata
 }
 ```
 
@@ -199,9 +225,23 @@ Published arrays use a **multi-part message** format:
 - Raw numpy array bytes
 - Reconstruct with `np.frombuffer(bytes, dtype).reshape(shape)`
 
+### 3. Stop Message (Single-part)
+Published when data acquisition ends (client disconnects or server shuts down):
+```python
+{
+    'msg_type': 'stop',
+    'scan_name': 'acquisition_20250112T160536Z_8b850728',
+    'total_flushes': 9,
+    'total_cycles': 99,
+    'total_packets': 50000,
+    'acquisition_duration_s': 28.91,
+    # ... statistics
+}
+```
+
 ### Example Subscriber
 
-**See also `example_zmq_sub.py`**
+**See also `example_zmq_sub.py`** for a complete example that handles all message types.
 
 ```python
 import zmq
@@ -214,16 +254,48 @@ socket.connect("tcp://localhost:5657")
 socket.setsockopt(zmq.SUBSCRIBE, b"")
 
 while True:
-    # Receive multi-part message
+    # Receive first part (metadata)
     metadata_bytes = socket.recv()
-    array_bytes = socket.recv()
-    
-    # Unpack
     metadata = msgpack.unpackb(metadata_bytes)
-    array = np.frombuffer(array_bytes, dtype=metadata['dtype']).reshape(metadata['shape'])
-    
-    # Process
-    print(f"Received array: {array.shape}, total counts: {np.sum(array)}")
+    msg_type = metadata.get('msg_type')
+
+    if msg_type == 'start':
+        print(f"Acquisition started: {metadata['scan_name']}")
+    elif msg_type == 'stop':
+        print(f"Acquisition stopped: {metadata['scan_name']}")
+    elif msg_type == 'event' or msg_type is None:
+        # Event message - receive array data
+        array_bytes = socket.recv()
+        array = np.frombuffer(array_bytes, dtype=metadata['dtype']).reshape(metadata['shape'])
+        print(f"Received flush #{metadata.get('flush_number')}: {array.shape}")
+```
+
+### Using the Listener Pattern
+
+For a more structured approach, use `SplashTimePixZMQListener` (similar to ArroyoXPS):
+
+**See also `example_listener.py`**
+
+```python
+from splash_timepix.listener import SplashTimePixZMQListener
+from splash_timepix.schemas import TimePixStart, TimePixEvent, TimePixStop
+
+def my_operator(message):
+    if isinstance(message, TimePixStart):
+        # Initialize processing
+        print(f"Start: {message.scan_name}")
+    elif isinstance(message, TimePixEvent):
+        # Process data array
+        print(f"Event: flush #{message.flush_number}, shape={message.array.shape}")
+    elif isinstance(message, TimePixStop):
+        # Finalize processing
+        print(f"Stop: {message.scan_name}, {message.total_flushes} flushes")
+
+listener = SplashTimePixZMQListener(
+    zmq_address="tcp://localhost:5657",
+    operator=my_operator
+)
+listener.start()  # Blocks until stopped
 ```
 
 ## Statistics Display
@@ -237,8 +309,8 @@ The application displays real-time statistics:
 - Unknown packet count
 
 ### Queue Statistics
-- **Message queue**: Raw 12-byte packets (socket → parser)
-- **Typed packets queue**: Parsed packets (parser → callback)
+- **Message queue**: Raw byte batches (socket reader → vectorized parser)
+- **Callback**: One `BatchParseResult` per batch (pixel/TDC/control arrays), not a list of packet objects
 - **x, y, t array queue**: 3D arrays (callback → worker)
 - **Single array size**: Memory per 3D array
 
@@ -292,7 +364,14 @@ Replay recorded `.tpx3` files:
 
 ### Run Tests
 ```bash
+# Run all tests
 pytest
+
+# Run start/stop message tests
+pytest tests/test_start_stop_messages.py -v
+
+# Run quick manual test (requires server running)
+python tests/test_start_stop_quick.py
 ```
 
 ### Run Pre-commit Checks
@@ -304,7 +383,13 @@ pre-commit run --all-files
 ```
 Data Source → Socket Server → Callback (Binning) → Processing Queue → Worker
                 ↓                    ↓                                    ↓
-           Parser (12B)        3D Array (x,y,t)               Plot or Publish
+      Parser (NumPy batches)   3D Array (x,y,t)               Plot or Publish
+                                                                    ↓
+                                                          ZMQ PUB (start/event/stop)
+                                                                    ↓
+                                                          SplashTimePixZMQListener
+                                                                    ↓
+                                                          Operator (your processing)
 ```
 
 **Threading:**
@@ -313,7 +398,7 @@ Data Source → Socket Server → Callback (Binning) → Processing Queue → Wo
 3. Plotting/ZMQ Worker Thread (output bound)
 4. Input Listener Thread (user commands)
 
-See [SOCKET_SERVER_README.md](SOCKET_SERVER_README.md) for server details.
+See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server details.
 
 ## Troubleshooting
 

@@ -1,0 +1,153 @@
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+import requests
+
+
+class ServalError(Exception):
+    """Custom exception for Serval client errors."""
+
+    pass
+
+
+class ServalClient:
+    """
+    Client to interact with the Serval detector server via HTTP.
+    """
+
+    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 10.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.timeout = timeout
+
+        logging.debug(f"Initialized ServalClient for {self.base_url}")
+
+    def _request(self, method: str, endpoint: str, *, expected_status: int = 200, **kwargs: Any) -> requests.Response:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        logging.debug(f"{method.upper()} {url} payload={kwargs.get('data') or kwargs.get('params')}")
+
+        try:
+            response = self.session.request(method, url, timeout=self.timeout, **kwargs)
+        except requests.RequestException as e:
+            raise ServalError(f"Connection error: {e}")
+
+        if response.status_code != expected_status:
+            raise ServalError(f"Unexpected status {response.status_code} for {url}: {response.text}")
+
+        return response
+
+    def check_connection(self) -> None:
+        """Ping the server to verify it's reachable."""
+        self._request("get", "")
+        logging.info("Connection to Serval server is OK.")
+
+    def get_dashboard(self) -> Dict[str, Any]:
+        """Retrieve the dashboard JSON from the server."""
+        resp = self._request("get", "/dashboard")
+        return resp.json()
+
+    def load_configuration(self, fmt: str, file_path: Path) -> None:
+        """
+        Load a configuration file (binary or dacs) onto the server.
+        """
+        if not file_path.exists():
+            raise ServalError(f"Configuration file not found: {file_path}")
+        params = {"format": fmt, "file": str(file_path)}
+        resp = self._request("get", "/config/load", params=params)
+
+        logging.info(f"Loaded {fmt} from {file_path.name}: {resp.text.strip()}")
+
+    def get_detector_config(self) -> Dict[str, Any]:
+        """Fetch current detector configuration."""
+        return self._request("get", "/detector/config").json()
+
+    def update_detector_config(self, config: Dict[str, Any]) -> None:
+        """Push updated detector configuration to the server."""
+        data = json.dumps(config)
+        resp = self._request("put", "/detector/config", data=data)
+
+        logging.info(f"Detector config updated: {resp.text.strip()}")
+
+    def set_destination(self, destination: Dict[str, Any]) -> None:
+        """Configure the server's data output destination."""
+        data = json.dumps(destination)
+        resp = self._request("put", "/server/destination", data=data)
+
+        logging.info(f"Destination set: {resp.text.strip()}")
+
+    def get_destination(self) -> Dict[str, Any]:
+        """Retrieve the currently configured destination."""
+        return self._request("get", "/server/destination").json()
+
+    def start_acquisition(self, restartTimers=True) -> None:
+        """Trigger the measurement start."""
+        restartTimersString = "false"
+
+        if restartTimers:
+            restartTimersString = "true"
+
+        resp = self._request("get", "/measurement/start", params={"restartTimers": restartTimersString})
+
+        logging.info(f"Acquisition started: {resp.text.strip()}")
+
+    def stop_acquisition(self) -> None:
+        """Stop the current measurement gracefully."""
+        resp = self._request("get", "/measurement/stop")
+        logging.info(f"Acquisition stopped: {resp.text.strip()}")
+
+    def get_frame_count(self) -> int:
+        """Retrieve the current frame count from the dashboard."""
+        dash = self.get_dashboard()
+        return dash.get("Measurement", {}).get("FrameCount", 0)
+
+    def get_measurement_status(self) -> Dict[str, Any]:
+        """Retrieve measurement status info from the dashboard."""
+        dash = self.get_dashboard()
+        return dash.get("Measurement", {})
+
+    def calibrate_toa(self) -> None:
+        """Trigger the measurement start."""
+        resp = self._request("get", "/detector/calibrate_toa")
+        logging.info(f"TOA calibration finished: {resp.text.strip()}")
+
+    def get_chip_adjustments(self) -> List[List[int]]:
+        """
+        Retrieve the 'Adjust' list for each detector chip.
+
+        Returns:
+            A list of adjustment-value lists, one per chip.
+        """
+        resp = self._request("get", "/detector/chips")
+        chips = resp.json()
+        return [chip.get("Adjust", []) for chip in chips]
+
+    def wait_for_measurement_to_finish(self, poll_interval: float = 0.5) -> None:
+        """Poll the dashboard until the measurement is done."""
+        while True:
+            dash = self.get_dashboard()
+
+            status = dash.get("Measurement", {}).get("Status")
+            logging.debug(f"Measurement status: {status}")
+
+            if status == "DA_IDLE":
+                logging.info("Measurement complete.")
+                break
+
+            time.sleep(poll_interval)
+
+    def wait_for_detector(self, poll_interval: float = 0.5) -> None:
+        """Poll the dashboard until the detector is connected."""
+        while True:
+            dash = self.get_dashboard()
+
+            detector_type = dash.get("Detector", {}).get("DetectorType")
+            logging.debug(f"DetectorType: {detector_type}")
+
+            if detector_type == "Tpx3":
+                logging.info("Connected to Detector.")
+                break
+
+            time.sleep(poll_interval)
