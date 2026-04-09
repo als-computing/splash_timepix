@@ -46,10 +46,10 @@ pre-commit install
 
 Additional markdown guides in the repository:
 
-- [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) — Socket server threading, ring buffer, and parser callback behavior
-- [info/IMPLEMENTATION_OVERVIEW.md](info/IMPLEMENTATION_OVERVIEW.md) — Start/stop ZMQ messages, schemas, and listener pattern (ArroyoXPS alignment)
-- [info/SAMPLE_START_MESSAGE.md](info/SAMPLE_START_MESSAGE.md) — Example ZMQ start message (wire format and fields)
-- [info/TESTING_GUIDE.md](info/TESTING_GUIDE.md) — Manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration)
+- [Socket server](info/SOCKET_SERVER_README.md) — threading, ring buffer, and parser callback behavior
+- [Implementation overview](info/IMPLEMENTATION_OVERVIEW.md) — start/stop ZMQ messages, schemas, and listener pattern (ArroyoXPS alignment)
+- [Sample start message](info/SAMPLE_START_MESSAGE.md) — example ZMQ start message (wire format and fields)
+- [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration)
 
 ## Architecture
 
