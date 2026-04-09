@@ -42,6 +42,15 @@ pip install -e .[dev]
 pre-commit install
 ```
 
+## Documentation (`info/`)
+
+Additional markdown guides in the repository:
+
+- [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) — Socket server threading, ring buffer, and parser callback behavior
+- [info/IMPLEMENTATION_OVERVIEW.md](info/IMPLEMENTATION_OVERVIEW.md) — Start/stop ZMQ messages, schemas, and listener pattern (ArroyoXPS alignment)
+- [info/SAMPLE_START_MESSAGE.md](info/SAMPLE_START_MESSAGE.md) — Example ZMQ start message (wire format and fields)
+- [info/TESTING_GUIDE.md](info/TESTING_GUIDE.md) — Manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration)
+
 ## Architecture
 
 The system consists of four main components:
@@ -187,7 +196,7 @@ After starting the test source, use these commands:
 
 ## ZMQ Message Format
 
-The system publishes three types of messages via ZMQ:
+The system publishes three types of messages via ZMQ. For a concrete **start** payload example, see [info/SAMPLE_START_MESSAGE.md](info/SAMPLE_START_MESSAGE.md).
 
 ### 1. Start Message (Single-part)
 Published when data acquisition begins (first data arrives):
@@ -362,6 +371,8 @@ Replay recorded `.tpx3` files:
 
 ## Development
 
+For step-by-step testing (server, simulator, ZMQ subscribers, optional ArroyoXPS), see [info/TESTING_GUIDE.md](info/TESTING_GUIDE.md).
+
 ### Run Tests
 ```bash
 # Run all tests
@@ -398,7 +409,7 @@ Data Source → Socket Server → Callback (Binning) → Processing Queue → Wo
 3. Plotting/ZMQ Worker Thread (output bound)
 4. Input Listener Thread (user commands)
 
-See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server details.
+See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server details. For the start/stop design and message flow, see [info/IMPLEMENTATION_OVERVIEW.md](info/IMPLEMENTATION_OVERVIEW.md).
 
 ## Troubleshooting
 
