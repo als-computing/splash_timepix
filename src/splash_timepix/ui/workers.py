@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import msgpack
 import numpy as np
@@ -57,6 +57,16 @@ class HeartbeatStatus:
     data_port: int = 0
     tcp_port: int = 0
     error: Optional[str] = None
+    # (current_size, max_size); None if not present in message (old server / disconnected)
+    q_ingest: Optional[Tuple[int, int]] = None
+    q_xyt: Optional[Tuple[int, int]] = None
+    q_zmq_control: Optional[Tuple[int, int]] = None
+
+
+def _heartbeat_queue_pair(msg: Dict[str, Any], sz_key: str, mx_key: str) -> Optional[Tuple[int, int]]:
+    if sz_key in msg and mx_key in msg:
+        return (int(msg[sz_key]), int(msg[mx_key]))
+    return None
 
 
 # =============================================================================
@@ -194,6 +204,9 @@ class HeartbeatMonitorWorker(QThread):
                         uptime_s=msg.get("uptime_s", 0.0),
                         data_port=msg.get("data_port", 0),
                         tcp_port=msg.get("tcp_port", 0),
+                        q_ingest=_heartbeat_queue_pair(msg, "q_ingest_sz", "q_ingest_max"),
+                        q_xyt=_heartbeat_queue_pair(msg, "q_xyt_sz", "q_xyt_max"),
+                        q_zmq_control=_heartbeat_queue_pair(msg, "q_ctrl_sz", "q_ctrl_max"),
                     )
                     self.status_updated.emit(status)
 
@@ -318,6 +331,7 @@ class ProcessManager(QObject):
         tdc_frequency: float,
         tdc_channel: int = 1,
         tdc_edge: str = "rising",
+        callback_batch_size: int = 10_000,
         collapse_y: bool = True,
         exit_on_disconnect: bool = True,
     ) -> bool:
@@ -330,6 +344,8 @@ class ProcessManager(QObject):
             str(tdc_channel),
             "--tdc-edge",
             tdc_edge,
+            "--callback-batch-size",
+            str(int(callback_batch_size)),
         ]
         if collapse_y:
             args.append("--collapse-y")

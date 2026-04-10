@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from enum import Enum
-from typing import Optional
+from typing import Any, Callable, Dict, Optional
 
 import msgpack
 import zmq
@@ -36,6 +36,10 @@ class HeartbeatPublisher:
             'pid': int,             # Process ID
             'data_port': int,       # Port for data ZMQ PUB socket
             'tcp_port': int,        # Port for TCP socket (live-cli connection)
+            # Optional pipeline queue depths (when set via set_queue_stats_provider):
+            'q_ingest_sz': int, 'q_ingest_max': int,   # TCP raw-batch queue
+            'q_xyt_sz': int, 'q_xyt_max': int,         # 3D flush queue → ZMQ worker
+            'q_ctrl_sz': int, 'q_ctrl_max': int,       # ZMQ start/stop control queue
         }
 
     Usage:
@@ -79,6 +83,14 @@ class HeartbeatPublisher:
         # ZMQ context and socket created in thread
         self._context: Optional[zmq.Context] = None
         self._socket: Optional[zmq.Socket] = None
+        self._queue_stats_provider: Optional[Callable[[], Dict[str, Any]]] = None
+
+    def set_queue_stats_provider(self, provider: Optional[Callable[[], Dict[str, Any]]]) -> None:
+        """Provide a callable that returns extra heartbeat keys (e.g. queue depths).
+
+        Called from the heartbeat thread once per publish; must be thread-safe and fast.
+        """
+        self._queue_stats_provider = provider
 
     def set_state(self, state: ServerState) -> None:
         """Update the current server state (thread-safe)."""
@@ -157,6 +169,13 @@ class HeartbeatPublisher:
             "data_port": self.data_port,
             "tcp_port": self.tcp_port,
         }
+        if self._queue_stats_provider is not None:
+            try:
+                extra = self._queue_stats_provider()
+                if extra:
+                    message.update(extra)
+            except Exception:
+                logger.debug("queue_stats_provider failed", exc_info=True)
 
         try:
             self._socket.send(msgpack.packb(message), zmq.DONTWAIT)
