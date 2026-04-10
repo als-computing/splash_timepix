@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -32,6 +33,24 @@ TIMESTAMP_PS_PER_TICK = 260.41666  # 1 / 3840 MHz in picoseconds
 
 # Module-level logger
 logger = logging.getLogger(__name__)
+
+
+def _clear_screen_safely() -> None:
+    """Clear console only when it is a real terminal.
+
+    Under QProcess or other captures, ``clear`` may run with ``TERM`` unset and
+    spam ``tput: TERM variable not set`` on stderr.
+    """
+    try:
+        out = sys.stdout
+        if out is None or not out.isatty():
+            return
+    except (AttributeError, ValueError):
+        return
+    if os.name == "nt":
+        os.system("cls")
+    elif os.environ.get("TERM"):
+        os.system("clear")
 
 
 @app.command()
@@ -76,7 +95,7 @@ def main(
         collapse_y: Send x,y,t (False) or x,t data (True)
         heartbeat_port: Port for ZMQ heartbeat messages (default: 5658)
     """
-    os.system("cls" if os.name == "nt" else "clear")
+    _clear_screen_safely()
     print("Starting TimPix3 Streaming Application")
     print("=" * 50)
     if exit_on_disconnect:
@@ -137,6 +156,21 @@ def main(
 
     # Create message queue for start/stop control messages (only used with ZMQ worker)
     message_queue = queue.Queue(maxsize=10) if not plot else None
+
+    def _queue_stats_for_heartbeat():
+        """Snapshot for heartbeat (called from heartbeat thread; keep fast)."""
+        stats = {
+            "q_ingest_sz": server.get_queue_size(),
+            "q_ingest_max": server.buffer_size,
+            "q_xyt_sz": xyt_queue.qsize(),
+            "q_xyt_max": xyt_queue.maxsize,
+        }
+        if message_queue is not None:
+            stats["q_ctrl_sz"] = message_queue.qsize()
+            stats["q_ctrl_max"] = message_queue.maxsize
+        return stats
+
+    heartbeat.set_queue_stats_provider(_queue_stats_for_heartbeat)
 
     # Generate unique scan name
     # Generate initial scan_name (will be regenerated for each new client connection)
@@ -660,8 +694,8 @@ def main(
                 # Update number of total data points
                 last_total_data_points = event_count
 
-                # Clear the terminal and print the stats
-                os.system("cls" if os.name == "nt" else "clear")
+                # Clear the terminal and print the stats (skip when not a TTY)
+                _clear_screen_safely()
                 print(info)
                 print()
                 print("Overall Stats")

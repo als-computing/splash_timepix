@@ -179,13 +179,25 @@ class MainWindow(QMainWindow):
         tdc_freq = params["tdc_frequency"]
         tdc_channel = params["tdc_channel"]
         tdc_edge = params["tdc_edge"]
+        callback_batch_size = params.get("callback_batch_size", 10_000)
         duration = params["duration"]
 
-        logger.info(f"Starting {mode}: TDC={tdc_freq}Hz, ch={tdc_channel}, edge={tdc_edge}, duration={duration}s")
-        self._engineering_tab.append_system_log(f"Starting {mode}: TDC={tdc_freq}Hz, duration={duration}s")
+        logger.info(
+            f"Starting {mode}: TDC={tdc_freq}Hz, ch={tdc_channel}, edge={tdc_edge}, "
+            f"callback_batch_size={callback_batch_size}, duration={duration}s"
+        )
+        self._engineering_tab.append_system_log(
+            f"Starting {mode}: TDC={tdc_freq}Hz, parse_batch={callback_batch_size}, duration={duration}s"
+        )
 
         # Start streaming server (needed for all modes)
-        if not self._process_manager.start_streaming_server(tdc_freq, tdc_channel, tdc_edge, exit_on_disconnect=True):
+        if not self._process_manager.start_streaming_server(
+            tdc_freq,
+            tdc_channel,
+            tdc_edge,
+            callback_batch_size=callback_batch_size,
+            exit_on_disconnect=True,
+        ):
             QMessageBox.warning(self, "Error", "Failed to start streaming server")
             return
 
