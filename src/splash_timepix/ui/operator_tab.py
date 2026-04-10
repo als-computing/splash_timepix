@@ -612,9 +612,7 @@ class OperatorTab(QWidget):
             return
         sz, mx = depth
         label.setText(f"{sz} / {mx}")
-        label.setToolTip(
-            f"Packet buffer: {sz} of {mx} batches queued for parse. Full = red (drops likely)."
-        )
+        label.setToolTip(f"Packet buffer: {sz} of {mx} batches queued for parse. Full = red (drops likely).")
         label.setStyleSheet(_queue_metric_style(alert=mx > 0 and sz >= mx))
 
     def _apply_zmq_pub_sub_label(
@@ -635,10 +633,7 @@ class OperatorTab(QWidget):
         else:
             sc, mc = q_ctrl
             label.setText(f"{sx} ({sc}) / {mx}")
-            tip = (
-                f"3D flush (PUB): {sx}/{mx}; control (SUB): {sc}/{mc}. "
-                "Red if either queue is full (drops likely)."
-            )
+            tip = f"3D flush (PUB): {sx}/{mx}; control (SUB): {sc}/{mc}. " "Red if either queue is full (drops likely)."
         label.setToolTip(tip)
         flush_full = mx > 0 and sx >= mx
         ctrl_full = q_ctrl is not None and q_ctrl[1] > 0 and q_ctrl[0] >= q_ctrl[1]
