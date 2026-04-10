@@ -3,10 +3,10 @@
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -28,6 +28,12 @@ from .widgets import HeatmapWidget, StatusIndicator, get_colormap
 from .workers import FlushData, HeartbeatStatus, ServalStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _queue_metric_style(*, alert: bool) -> str:
+    """Monospace queue value; alarm is red text only (no border/padding—avoids layout shift)."""
+    color = theme.STATUS_ERROR if alert else theme.TEXT_PRIMARY
+    return f"font-family: monospace; color: {color};"
 
 
 def _title_light_label(text: str) -> str:
@@ -196,63 +202,113 @@ class OperatorTab(QWidget):
         # Acquisition settings
         settings_group = QGroupBox("Acquisition Settings")
         settings_group.setStyleSheet(theme.group_box_style())
+        settings_group.setToolTip(
+            "Parameters for the streaming server and acquisition. Each row has a detailed tooltip; "
+            "hover the label or control."
+        )
         settings_layout = QVBoxLayout(settings_group)
 
+        _tt_tdc_freq = (
+            "Expected TDC trigger rate in Hz. Defines one full time cycle per trigger for binning "
+            "and flush timing in the streaming server. Should match the hardware / Serval setup."
+        )
         # TDC Frequency
         tdc_row = QHBoxLayout()
         tdc_label = QLabel("TDC Frequency (Hz):")
         tdc_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        tdc_label.setToolTip(_tt_tdc_freq)
         tdc_row.addWidget(tdc_label)
         self._tdc_freq_input = QDoubleSpinBox()
         self._tdc_freq_input.setRange(0.1, 1e9)
         self._tdc_freq_input.setValue(1000.0)
         self._tdc_freq_input.setDecimals(1)
         self._tdc_freq_input.setStyleSheet(theme.input_style())
+        self._tdc_freq_input.setToolTip(_tt_tdc_freq)
         tdc_row.addWidget(self._tdc_freq_input)
         settings_layout.addLayout(tdc_row)
 
+        _tt_tdc_ch = (
+            "Which TimePix TDC input defines cycle boundaries: both channels, or only TDC1 / TDC2. "
+            "Must match how the detector and Serval are wired."
+        )
         # TDC Channel
         tdc_ch_row = QHBoxLayout()
         tdc_ch_label = QLabel("TDC Channel:")
         tdc_ch_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        tdc_ch_label.setToolTip(_tt_tdc_ch)
         tdc_ch_row.addWidget(tdc_ch_label)
         self._tdc_ch_combo = QComboBox()
         self._tdc_ch_combo.addItems(["Both", "1", "2"])
         self._tdc_ch_combo.setStyleSheet(theme.input_style())
+        self._tdc_ch_combo.setToolTip(_tt_tdc_ch)
         tdc_ch_row.addWidget(self._tdc_ch_combo)
         settings_layout.addLayout(tdc_ch_row)
 
+        _tt_tdc_edge = "Trigger on the rising or falling edge of the selected TDC line."
         # TDC Edge
         tdc_edge_row = QHBoxLayout()
         tdc_edge_label = QLabel("TDC Edge:")
         tdc_edge_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        tdc_edge_label.setToolTip(_tt_tdc_edge)
         tdc_edge_row.addWidget(tdc_edge_label)
         self._tdc_edge_combo = QComboBox()
         self._tdc_edge_combo.addItems(["Rising", "Falling"])
         self._tdc_edge_combo.setStyleSheet(theme.input_style())
+        self._tdc_edge_combo.setToolTip(_tt_tdc_edge)
         tdc_edge_row.addWidget(self._tdc_edge_combo)
         settings_layout.addLayout(tdc_edge_row)
 
+        # Parse batch size (CLI --callback-batch-size): packets per vectorized parse_batch call
+        batch_row = QHBoxLayout()
+        batch_label = QLabel("Parse batch (pkts):")
+        batch_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        batch_label.setToolTip(
+            "Target number of 12-byte packets per parse batch (vectorized parse_batch). "
+            "Lower → smaller batches and more frequent parser callbacks (often smoother under load); "
+            "higher → fewer, larger batches (throughput). Matches server --callback-batch-size."
+        )
+        batch_row.addWidget(batch_label)
+        self._callback_batch_input = QSpinBox()
+        self._callback_batch_input.setRange(1, 10_000_000)
+        self._callback_batch_input.setValue(10_000)
+        self._callback_batch_input.setSingleStep(1000)
+        self._callback_batch_input.setStyleSheet(theme.input_style())
+        self._callback_batch_input.setToolTip(batch_label.toolTip())
+        batch_row.addWidget(self._callback_batch_input)
+        settings_layout.addLayout(batch_row)
+
+        _tt_duration = (
+            "Acquisition length in seconds for Serval-backed runs and the simulator. "
+            "Preview and replay may ignore this depending on the workflow."
+        )
         # Duration
         dur_row = QHBoxLayout()
         dur_label = QLabel("Duration (s):")
         dur_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        dur_label.setToolTip(_tt_duration)
         dur_row.addWidget(dur_label)
         self._duration_input = QSpinBox()
         self._duration_input.setRange(1, 19008000)
         self._duration_input.setValue(60)
         self._duration_input.setStyleSheet(theme.input_style())
+        self._duration_input.setToolTip(_tt_duration)
         dur_row.addWidget(self._duration_input)
         settings_layout.addLayout(dur_row)
 
+        _tt_output_label = (
+            "Directory for Serval output (.tpx3) and saved averages in Start mode. "
+            "Hover the path field to see the full resolved path."
+        )
         # Output directory
         out_row = QHBoxLayout()
         out_label = QLabel("Output:")
         out_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        out_label.setToolTip(_tt_output_label)
         out_row.addWidget(out_label)
         self._output_input = QLineEdit()
         self._output_input.setText(str(Path.home() / "Desktop" / "data"))
         self._output_input.setStyleSheet(theme.input_style())
+        self._output_input.textChanged.connect(self._sync_output_path_tooltip)
         out_row.addWidget(self._output_input)
         self._browse_output_btn = QPushButton("…")
         self._browse_output_btn.setFixedSize(32, 26)
@@ -271,11 +327,55 @@ class OperatorTab(QWidget):
             }}
         """
         )
+        self._browse_output_btn.setToolTip(
+            "Choose output folder. The path field tooltip always shows the full resolved directory when you hover it."
+        )
         self._browse_output_btn.clicked.connect(self._browse_output)
         out_row.addWidget(self._browse_output_btn)
         settings_layout.addLayout(out_row)
+        self._sync_output_path_tooltip()
 
         left_layout.addWidget(settings_group)
+
+        # Pipeline queue depths (from streaming server heartbeat)
+        pipeline_group = QGroupBox("Pipeline queues")
+        pipeline_group.setStyleSheet(theme.group_box_style())
+        pipeline_group.setToolTip(
+            "Live depth vs capacity. Packet buffer fills when the parse thread cannot keep up with TCP—"
+            "try lowering Parse batch (pkts) or increasing buffer-size on the server. "
+            "ZMQ PUB (SUB): 3D flush depth (publisher); value in parentheses is the start/stop control queue."
+        )
+        pipeline_layout = QVBoxLayout(pipeline_group)
+        pipeline_layout.setSpacing(4)
+        self._queue_labels: dict[str, QLabel] = {}
+        queue_rows = [
+            (
+                "packet_buffer",
+                "Packet buffer:",
+                "Queued raw TCP batches waiting for the parser thread (SocketDataServer message queue). "
+                "Fills if parsing lags behind the network reader.",
+            ),
+            (
+                "zmq_pub",
+                "ZMQ PUB (SUB):",
+                "3D flush queue (PUB path) and control queue depth in parentheses; "
+                "denominator is flush-queue capacity.",
+            ),
+        ]
+        for key, title, tip in queue_rows:
+            row = QHBoxLayout()
+            name_label = QLabel(title)
+            name_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+            name_label.setToolTip(tip)
+            value_label = QLabel("--")
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(name_label)
+            row.addStretch()
+            row.addWidget(value_label)
+            pipeline_layout.addLayout(row)
+            self._queue_labels[key] = value_label
+
+        left_layout.addWidget(pipeline_group)
 
         # Statistics
         stats_group = QGroupBox("Statistics")
@@ -288,10 +388,8 @@ class OperatorTab(QWidget):
             ("pixel_rate", "Pixel Rate:"),
             ("tdc1_rate", "TDC1 Rate:"),
             ("tdc2_rate", "TDC2 Rate:"),
-            ("elapsed", "Elapsed:"),
-            ("remaining", "Remaining:"),
-            ("flushes", "Flushes:"),
-            ("total_cycles", "Total Cycles:"),
+            ("elapsed_remaining", "Elapsed / Remaining:"),
+            ("flushes_cycles", "Flushes (Cycles):"),
             ("avg_counts", "Avg Counts/Cycle:"),
         ]
 
@@ -327,6 +425,22 @@ class OperatorTab(QWidget):
         content_layout.addWidget(right_panel, stretch=1)
         layout.addLayout(content_layout, stretch=1)
 
+    def _sync_output_path_tooltip(self, *_args) -> None:
+        """Keep the output line edit tooltip equal to the resolved full path (or a short hint if empty)."""
+        text = self._output_input.text().strip()
+        if not text:
+            self._output_input.setToolTip(
+                "Output directory for file-backed acquisition. Type a path or use Browse. "
+                "Hover here after entering a path to see the full resolved location."
+            )
+            return
+        p = Path(text).expanduser()
+        try:
+            full = str(p.resolve())
+        except OSError:
+            full = str(p)
+        self._output_input.setToolTip(full)
+
     def _browse_output(self):
         current = self._output_input.text() or str(Path.home() / "data")
         directory = QFileDialog.getExistingDirectory(self, "Select Output Directory", current)
@@ -347,6 +461,7 @@ class OperatorTab(QWidget):
             "tdc_frequency": self._tdc_freq_input.value(),
             "tdc_channel": self._get_tdc_channel(),
             "tdc_edge": self._get_tdc_edge(),
+            "callback_batch_size": int(self._callback_batch_input.value()),
             "duration": self._duration_input.value(),
             "output_dir": self._output_input.text(),
         }
@@ -384,8 +499,7 @@ class OperatorTab(QWidget):
         logger.info("Running average reset")
 
     def _update_flush_stats(self):
-        self._stats_labels["flushes"].setText(str(self._flush_count))
-        self._stats_labels["total_cycles"].setText(f"{self._total_cycles:,}")
+        self._stats_labels["flushes_cycles"].setText(f"{self._flush_count} ({self._total_cycles:,})")
         if self._total_cycles > 0 and self._cumulative_sum is not None:
             avg = np.sum(self._cumulative_sum) / self._total_cycles
             self._stats_labels["avg_counts"].setText(f"{avg:.2e}")
@@ -403,6 +517,7 @@ class OperatorTab(QWidget):
         self._tdc_freq_input.setEnabled(not acquiring)
         self._tdc_ch_combo.setEnabled(not acquiring)
         self._tdc_edge_combo.setEnabled(not acquiring)
+        self._callback_batch_input.setEnabled(not acquiring)
         self._duration_input.setEnabled(not acquiring)
         self._output_input.setEnabled(not acquiring)
         self._browse_output_btn.setEnabled(not acquiring)
@@ -485,8 +600,49 @@ class OperatorTab(QWidget):
             self._stats_labels["tdc2_rate"].setText(f"{status.tdc2_event_rate:.1f} Hz")
             elapsed = status.elapsed_time
             remaining = status.time_left
-            self._stats_labels["elapsed"].setText(f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}")
-            self._stats_labels["remaining"].setText(f"{int(remaining // 60):02d}:{int(remaining % 60):02d}")
+            el = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+            rem = f"{int(remaining // 60):02d}:{int(remaining % 60):02d}"
+            self._stats_labels["elapsed_remaining"].setText(f"{el} / {rem}")
+
+    def _apply_queue_depth_label(self, label: QLabel, depth: Optional[Tuple[int, int]]) -> None:
+        if depth is None:
+            label.setText("--")
+            label.setToolTip("")
+            label.setStyleSheet(_queue_metric_style(alert=False))
+            return
+        sz, mx = depth
+        label.setText(f"{sz} / {mx}")
+        label.setToolTip(
+            f"Packet buffer: {sz} of {mx} batches queued for parse. Full = red (drops likely)."
+        )
+        label.setStyleSheet(_queue_metric_style(alert=mx > 0 and sz >= mx))
+
+    def _apply_zmq_pub_sub_label(
+        self,
+        label: QLabel,
+        q_xyt: Optional[Tuple[int, int]],
+        q_ctrl: Optional[Tuple[int, int]],
+    ) -> None:
+        if q_xyt is None:
+            label.setText("--")
+            label.setToolTip("")
+            label.setStyleSheet(_queue_metric_style(alert=False))
+            return
+        sx, mx = q_xyt
+        if q_ctrl is None:
+            label.setText(f"{sx} (--) / {mx}")
+            tip = f"3D flush queue: {sx} of {mx}. Control queue not reported."
+        else:
+            sc, mc = q_ctrl
+            label.setText(f"{sx} ({sc}) / {mx}")
+            tip = (
+                f"3D flush (PUB): {sx}/{mx}; control (SUB): {sc}/{mc}. "
+                "Red if either queue is full (drops likely)."
+            )
+        label.setToolTip(tip)
+        flush_full = mx > 0 and sx >= mx
+        ctrl_full = q_ctrl is not None and q_ctrl[1] > 0 and q_ctrl[0] >= q_ctrl[1]
+        label.setStyleSheet(_queue_metric_style(alert=flush_full or ctrl_full))
 
     @Slot(object)
     def on_heartbeat_status(self, status: HeartbeatStatus):
@@ -499,8 +655,12 @@ class OperatorTab(QWidget):
                     self._stream_status.start_ok_blink(state_label)
                 else:
                     self._stream_status.set_status_detail(state_label)
+            self._apply_queue_depth_label(self._queue_labels["packet_buffer"], status.q_ingest)
+            self._apply_zmq_pub_sub_label(self._queue_labels["zmq_pub"], status.q_xyt, status.q_zmq_control)
         else:
             self._stream_status.set_connected(False, "")
+            self._apply_queue_depth_label(self._queue_labels["packet_buffer"], None)
+            self._apply_zmq_pub_sub_label(self._queue_labels["zmq_pub"], None, None)
 
     @Slot(bool)
     def on_zmq_connection_changed(self, connected: bool):
