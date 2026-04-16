@@ -6,8 +6,8 @@ from functools import lru_cache
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PySide6.QtCore import QPointF, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 
 from . import theme
@@ -147,12 +147,161 @@ class VerticalLabel(QWidget):
 
 
 # =============================================================================
+# Heatmap Canvas (image + draggable cursor pairs)
+# =============================================================================
+
+_CURSOR_COLORS = ("#00FFFF", "#FF8C00")  # cyan, orange — one per ROI pair
+
+
+class _HeatmapCanvas(QWidget):
+    """Paints a heatmap pixmap and two draggable horizontal cursor pairs.
+
+    Each pair consists of two lines (same color) whose y-positions are stored
+    as fractions in [0, 1] from the top of the *image* (not the widget).  When
+    a cursor is dragged, ``cursors_changed(pair_idx, frac_a, frac_b)`` is
+    emitted so callers can recompute spectra.
+    """
+
+    cursors_changed = Signal(int, float, float)  # pair_idx, frac_a, frac_b
+
+    _HIT_PX = 8  # pixels distance to register a cursor grab
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pixmap: Optional[QPixmap] = None
+        self._cursors_visible = False
+        # Two pairs; each is [frac_a, frac_b], 0.0 = top, 1.0 = bottom
+        self._cursors: list[list[float]] = [[0.20, 0.35], [0.60, 0.75]]
+        self._drag: Optional[tuple[int, int]] = None  # (pair_idx, cursor_idx)
+        self.setMinimumSize(200, 150)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_pixmap(self, pixmap: Optional[QPixmap]) -> None:
+        self._pixmap = pixmap
+        self.update()
+
+    def set_cursors_visible(self, visible: bool) -> None:
+        self._cursors_visible = visible
+        self.update()
+
+    def get_cursor_fracs(self) -> list[tuple[float, float]]:
+        return [(c[0], c[1]) for c in self._cursors]
+
+    # ------------------------------------------------------------------
+    # Geometry helpers
+    # ------------------------------------------------------------------
+
+    def _image_rect(self) -> QRect:
+        """Rect (in widget coords) where the pixmap is drawn (KeepAspectRatio)."""
+        if self._pixmap is None or self._pixmap.isNull():
+            return self.rect()
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if pw == 0 or ph == 0:
+            return self.rect()
+        scale = min(self.width() / pw, self.height() / ph)
+        iw = int(pw * scale)
+        ih = int(ph * scale)
+        x = (self.width() - iw) // 2
+        y = (self.height() - ih) // 2
+        return QRect(x, y, iw, ih)
+
+    def _frac_to_y(self, frac: float, rect: QRect) -> int:
+        return rect.top() + int(frac * rect.height())
+
+    def _y_to_frac(self, y: int, rect: QRect) -> float:
+        if rect.height() == 0:
+            return 0.0
+        return max(0.0, min(1.0, (y - rect.top()) / rect.height()))
+
+    def _find_nearest_cursor(self, y: int, rect: QRect) -> Optional[tuple[int, int]]:
+        best_dist = self._HIT_PX + 1
+        best = None
+        for pair_idx, fracs in enumerate(self._cursors):
+            for ci, frac in enumerate(fracs):
+                dist = abs(self._frac_to_y(frac, rect) - y)
+                if dist <= self._HIT_PX and dist < best_dist:
+                    best_dist = dist
+                    best = (pair_idx, ci)
+        return best
+
+    # ------------------------------------------------------------------
+    # Painting
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(theme.BG_DARK))
+
+        if self._pixmap and not self._pixmap.isNull():
+            rect = self._image_rect()
+            painter.drawPixmap(rect, self._pixmap)
+
+            if self._cursors_visible:
+                for pair_idx, (frac_a, frac_b) in enumerate(self._cursors):
+                    color = QColor(_CURSOR_COLORS[pair_idx])
+
+                    # Translucent fill between the two lines
+                    y_top = self._frac_to_y(min(frac_a, frac_b), rect)
+                    y_bot = self._frac_to_y(max(frac_a, frac_b), rect)
+                    fill = QColor(color)
+                    fill.setAlpha(35)
+                    painter.fillRect(rect.left(), y_top, rect.width(), max(1, y_bot - y_top), fill)
+
+                    # Dashed cursor lines
+                    pen = QPen(color, 1.5, Qt.PenStyle.DashLine)
+                    painter.setPen(pen)
+                    for frac in (frac_a, frac_b):
+                        y = self._frac_to_y(frac, rect)
+                        painter.drawLine(rect.left(), y, rect.right(), y)
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if not self._cursors_visible or event.button() != Qt.MouseButton.LeftButton:
+            return
+        rect = self._image_rect()
+        if rect.height() == 0 or not rect.contains(event.pos()):
+            return
+        hit = self._find_nearest_cursor(event.pos().y(), rect)
+        if hit:
+            self._drag = hit
+
+    def mouseMoveEvent(self, event):
+        rect = self._image_rect()
+        if self._drag is not None:
+            frac = self._y_to_frac(event.pos().y(), rect)
+            pair_idx, ci = self._drag
+            self._cursors[pair_idx][ci] = frac
+            self.update()
+            self.cursors_changed.emit(pair_idx, self._cursors[pair_idx][0], self._cursors[pair_idx][1])
+        elif self._cursors_visible and rect.contains(event.pos()):
+            hit = self._find_nearest_cursor(event.pos().y(), rect)
+            self.setCursor(Qt.CursorShape.SizeVerCursor if hit else Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag = None
+
+
+# =============================================================================
 # Heatmap Widget
 # =============================================================================
 
 
 class HeatmapWidget(QWidget):
     """Widget that displays a 2D heatmap with colormap and axis labels."""
+
+    cursors_changed = Signal(int, float, float)  # pair_idx, frac_a, frac_b
 
     def __init__(self, title: str = "Heatmap", parent=None):
         super().__init__(parent)
@@ -196,12 +345,9 @@ class HeatmapWidget(QWidget):
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(2)
 
-        self._image_label = QLabel()
-        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setMinimumSize(200, 150)
-        self._image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._image_label.setStyleSheet(theme.heatmap_background_style())
-        center_layout.addWidget(self._image_label)
+        self._canvas = _HeatmapCanvas()
+        self._canvas.cursors_changed.connect(self.cursors_changed)
+        center_layout.addWidget(self._canvas)
 
         self._x_label = QLabel("Energy (pixels)")
         self._x_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -248,10 +394,17 @@ class HeatmapWidget(QWidget):
 
         self._update_display()
 
+    def enable_cursors(self, visible: bool) -> None:
+        """Show or hide the draggable ROI cursor pairs."""
+        self._canvas.set_cursors_visible(visible)
+
+    def get_cursor_fracs(self) -> list[tuple[float, float]]:
+        """Return current cursor fractions [(frac_a, frac_b), ...] for each pair."""
+        return self._canvas.get_cursor_fracs()
+
     def clear(self):
         self._data = None
-        self._image_label.clear()
-        self._image_label.setStyleSheet(theme.heatmap_background_style())
+        self._canvas.set_pixmap(None)
         self._stats_label.setText("No data")
 
     def _update_display(self):
@@ -271,15 +424,189 @@ class HeatmapWidget(QWidget):
         h, w = rgb.shape[:2]
         bytes_per_line = 3 * w
         qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        self._canvas.set_pixmap(QPixmap.fromImage(qimg))
 
-        pixmap = QPixmap.fromImage(qimg)
-        scaled = pixmap.scaled(
-            self._image_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.FastTransformation,
-        )
 
-        self._image_label.setPixmap(scaled)
+# =============================================================================
+# Spectrum Plot Widget
+# =============================================================================
+
+
+class SpectrumPlotWidget(QWidget):
+    """Paints two 1D spectra (one per ROI cursor pair) with two draggable vertical cursors.
+
+    Each spectrum is the counts-per-time-bin projection onto the energy (x) axis.
+    The vertical cursors emit ``cursors_changed(frac_a, frac_b)`` when moved so
+    callers can display pixel / eV positions.
+    """
+
+    cursors_changed = Signal(float, float)  # frac_a, frac_b (x fractions in [0, 1])
+
+    _COLORS = _CURSOR_COLORS  # keep in sync with heatmap cursor colors
+    _LABELS = ("ROI 1", "ROI 2")
+    _VCURSOR_COLOR = "#D0D0D0"  # light gray — neutral against cyan/orange spectra
+    _HIT_PX = 8
+
+    # Vertical margins (px) inside the widget
+    _MT = 6
+    _MB = 6
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._spectra: list[Optional[np.ndarray]] = [None, None]
+        # Vertical cursor x-fractions: 0.0 = left edge, 1.0 = right edge
+        self._vcursors: list[float] = [0.25, 0.75]
+        self._vdrag: Optional[int] = None  # index of cursor being dragged
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_spectrum(self, pair_idx: int, spectrum: Optional[np.ndarray]) -> None:
+        self._spectra[pair_idx] = spectrum
+        self.update()
+
+    def clear(self) -> None:
+        self._spectra = [None, None]
+        self.update()
+
+    def get_cursor_fracs(self) -> tuple[float, float]:
+        """Return current vertical cursor positions as (frac_a, frac_b) in [0, 1]."""
+        return (self._vcursors[0], self._vcursors[1])
+
+    # ------------------------------------------------------------------
+    # Geometry helpers
+    # ------------------------------------------------------------------
+
+    def _frac_to_cx(self, frac: float) -> int:
+        return int(frac * self.width())
+
+    def _cx_to_frac(self, x: int) -> float:
+        w = self.width()
+        if w == 0:
+            return 0.0
+        return max(0.0, min(1.0, x / w))
+
+    def _find_vcursor(self, x: int) -> Optional[int]:
+        best_dist = self._HIT_PX + 1
+        best = None
+        for i, frac in enumerate(self._vcursors):
+            dist = abs(self._frac_to_cx(frac) - x)
+            if dist <= self._HIT_PX and dist < best_dist:
+                best_dist = dist
+                best = i
+        return best
+
+    # ------------------------------------------------------------------
+    # Painting
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(theme.BG_DARK))
+
+        pl = 0
+        pr = self.width()
+        pt = self._MT
+        pb = self.height() - self._MB
+        pw = pr - pl
+        ph = pb - pt
+        if pw < 4 or ph < 4:
+            return
+
+        # Axes border
+        painter.setPen(QPen(QColor(theme.BORDER_SUBTLE), 1))
+        painter.drawRect(pl, pt, pw - 1, ph - 1)
+
+        # Valid spectra
+        valid = [(i, s) for i, s in enumerate(self._spectra) if s is not None and len(s) > 1]
+
+        if not valid:
+            f = painter.font()
+            f.setPixelSize(11)
+            painter.setFont(f)
+            painter.setPen(QColor(theme.TEXT_MUTED))
+            painter.drawText(pl, pt, pw, ph, Qt.AlignmentFlag.AlignCenter, "Drag cursors on average heatmap")
+            # Still draw vertical cursors so user can position them before data arrives
+        else:
+            # Y scale across all active spectra
+            ymax = max(float(s.max()) for _, s in valid)
+            if ymax <= 0:
+                ymax = 1.0
+
+            # Horizontal grid line at 50 %
+            grid_y = pb - int(0.5 * ph)
+            painter.setPen(QPen(QColor(theme.BORDER_SUBTLE), 1, Qt.PenStyle.DotLine))
+            painter.drawLine(pl + 1, grid_y, pr - 1, grid_y)
+
+            # Max-value annotation (top-left)
+            f = painter.font()
+            f.setPixelSize(9)
+            painter.setFont(f)
+            painter.setPen(QColor(theme.TEXT_MUTED))
+            painter.drawText(pl + 3, pt + 2, pw - 6, 12, Qt.AlignmentFlag.AlignLeft, f"peak {ymax:.2g} cts/bin")
+
+            # Draw each spectrum as a polyline
+            for pair_idx, spectrum in valid:
+                color = QColor(self._COLORS[pair_idx])
+                painter.setPen(QPen(color, 1.5))
+                n = len(spectrum)
+                poly = QPolygonF()
+                for i in range(n):
+                    x = pl + i / (n - 1) * pw
+                    y = pb - (float(spectrum[i]) / ymax) * ph
+                    poly.append(QPointF(x, y))
+                painter.drawPolyline(poly)
+
+            # Legend (top-right corner)
+            lx = pr - 58
+            ly = pt + 3
+            for i, (color_hex, label) in enumerate(zip(self._COLORS, self._LABELS)):
+                if self._spectra[i] is not None:
+                    painter.setPen(QPen(QColor(color_hex), 2))
+                    painter.drawLine(lx, ly + i * 14 + 5, lx + 14, ly + i * 14 + 5)
+                    f2 = painter.font()
+                    f2.setPixelSize(10)
+                    painter.setFont(f2)
+                    painter.setPen(QColor(color_hex))
+                    painter.drawText(
+                        lx + 17, ly + i * 14, 40, 14, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label
+                    )
+
+        # Vertical cursors — drawn last so they sit on top of everything
+        vc_color = QColor(self._VCURSOR_COLOR)
+        vc_pen = QPen(vc_color, 1.5, Qt.PenStyle.DashLine)
+        painter.setPen(vc_pen)
+        for frac in self._vcursors:
+            cx = self._frac_to_cx(frac)
+            painter.drawLine(cx, pt, cx, pb)
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        hit = self._find_vcursor(event.pos().x())
+        if hit is not None:
+            self._vdrag = hit
+
+    def mouseMoveEvent(self, event):
+        if self._vdrag is not None:
+            self._vcursors[self._vdrag] = self._cx_to_frac(event.pos().x())
+            self.update()
+            self.cursors_changed.emit(self._vcursors[0], self._vcursors[1])
+        else:
+            hit = self._find_vcursor(event.pos().x())
+            self.setCursor(Qt.CursorShape.SizeHorCursor if hit is not None else Qt.CursorShape.ArrowCursor)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._vdrag = None
 
 
 # =============================================================================
