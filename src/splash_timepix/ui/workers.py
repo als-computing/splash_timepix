@@ -4,6 +4,7 @@ Workers communicate with the UI via Qt signals to ensure thread safety.
 """
 
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -354,7 +355,7 @@ class ProcessManager(QObject):
 
         return self._start_process(
             name="streaming",
-            program="python",
+            program=sys.executable,
             args=args,
             working_dir=self._project_root,
         )
@@ -376,7 +377,7 @@ class ProcessManager(QObject):
 
         return self._start_process(
             name="simulator",
-            program="python",
+            program=sys.executable,
             args=args,
             working_dir=self._project_root,
         )
@@ -419,7 +420,7 @@ class ProcessManager(QObject):
 
         return self._start_process(
             name="acquisition",
-            program="python",
+            program=sys.executable,
             args=args,
             working_dir=self._project_root,
         )

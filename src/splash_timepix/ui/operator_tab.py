@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
-from .widgets import HeatmapWidget, StatusIndicator, get_colormap
+from .widgets import HeatmapWidget, SpectrumPlotWidget, StatusIndicator, VerticalLabel, get_colormap
 from .workers import FlushData, HeartbeatStatus, ServalStatus
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ class OperatorTab(QWidget):
         self._cumulative_sum: Optional[np.ndarray] = None
         self._total_cycles = 0
         self._flush_count = 0
+        self._last_avg_2d: Optional[np.ndarray] = None  # most recent averaged heatmap data
+        self._n_energy: Optional[int] = None  # number of energy pixels in current data
 
         self._setup_ui()
 
@@ -410,17 +413,142 @@ class OperatorTab(QWidget):
 
         content_layout.addWidget(left_panel)
 
-        # Heatmaps
+        # Heatmaps + spectrum panel
         right_panel = QWidget()
         right_layout = QHBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
 
-        self._current_heatmap = HeatmapWidget("Current Flush")
-        self._average_heatmap = HeatmapWidget("Running Average")
+        # Both heatmap columns use the same structure: heatmap (expanding) + bottom row (fixed).
+        # _SPECTRUM_ROW_H is shared so the two HeatmapWidgets always have equal height.
+        _SPECTRUM_ROW_H = 210
 
-        right_layout.addWidget(self._current_heatmap)
-        right_layout.addWidget(self._average_heatmap)
+        # Current Flush column: heatmap + cursor-readout / calibration panel
+        flush_col = QWidget()
+        flush_col_layout = QVBoxLayout(flush_col)
+        flush_col_layout.setContentsMargins(0, 0, 0, 0)
+        flush_col_layout.setSpacing(0)
+        self._current_heatmap = HeatmapWidget("Current Flush")
+        flush_col_layout.addWidget(self._current_heatmap)
+
+        # --- Cursor readout + calibration panel ---
+        readout_panel = QFrame()
+        readout_panel.setFixedHeight(_SPECTRUM_ROW_H)
+        readout_panel.setStyleSheet(
+            f"QFrame {{ background-color: {theme.BG_PANEL}; "
+            f"border: 1px solid {theme.BORDER_SUBTLE}; border-radius: 4px; }}"
+        )
+        rp_layout = QVBoxLayout(readout_panel)
+        rp_layout.setContentsMargins(10, 8, 10, 8)
+        rp_layout.setSpacing(6)
+
+        # Calibration controls row
+        cal_row = QHBoxLayout()
+        cal_row.setSpacing(6)
+
+        ev_px_lbl = QLabel("eV/pixel")
+        ev_px_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 11px;")
+        cal_row.addWidget(ev_px_lbl)
+        self._ev_per_pixel = QDoubleSpinBox()
+        self._ev_per_pixel.setRange(-10000.0, 10000.0)
+        self._ev_per_pixel.setDecimals(4)
+        self._ev_per_pixel.setValue(1.0)
+        self._ev_per_pixel.setSingleStep(0.001)
+        self._ev_per_pixel.setStyleSheet(theme.input_style())
+        self._ev_per_pixel.setFixedWidth(100)
+        cal_row.addWidget(self._ev_per_pixel)
+
+        cal_row.addSpacing(16)
+
+        ev_x0_lbl = QLabel("eV @ x=0")
+        ev_x0_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 11px;")
+        cal_row.addWidget(ev_x0_lbl)
+        self._ev_at_x0 = QDoubleSpinBox()
+        self._ev_at_x0.setRange(-1_000_000.0, 1_000_000.0)
+        self._ev_at_x0.setDecimals(2)
+        self._ev_at_x0.setValue(0.0)
+        self._ev_at_x0.setSingleStep(0.1)
+        self._ev_at_x0.setStyleSheet(theme.input_style())
+        self._ev_at_x0.setFixedWidth(100)
+        cal_row.addWidget(self._ev_at_x0)
+        cal_row.addStretch()
+        rp_layout.addLayout(cal_row)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {theme.BORDER_SUBTLE};")
+        rp_layout.addWidget(sep)
+
+        # Readout grid: columns = name | pixel | eV
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        grid.setColumnStretch(0, 2)
+        grid.setColumnStretch(1, 3)
+        grid.setColumnStretch(2, 3)
+
+        for col, text in enumerate(["", "Pixel", "eV"]):
+            hdr = QLabel(text)
+            hdr.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+            hdr.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(hdr, 0, col)
+
+        self._cursor_px_labels: list[QLabel] = []
+        self._cursor_ev_labels: list[QLabel] = []
+        row_names = ["Cursor A", "Cursor B", "Δ"]
+        for row_idx, name in enumerate(row_names):
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+            grid.addWidget(name_lbl, row_idx + 1, 0)
+
+            px_lbl = QLabel("--")
+            px_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY}; font-size: 11px;")
+            px_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(px_lbl, row_idx + 1, 1)
+            self._cursor_px_labels.append(px_lbl)
+
+            ev_lbl = QLabel("--")
+            ev_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY}; font-size: 11px;")
+            ev_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(ev_lbl, row_idx + 1, 2)
+            self._cursor_ev_labels.append(ev_lbl)
+
+        rp_layout.addLayout(grid)
+        rp_layout.addStretch()
+
+        self._ev_per_pixel.valueChanged.connect(self._update_cursor_readout)
+        self._ev_at_x0.valueChanged.connect(self._update_cursor_readout)
+
+        flush_col_layout.addWidget(readout_panel)
+        right_layout.addWidget(flush_col)
+
+        # Running Average column: heatmap + spectrum panel
+        avg_col = QWidget()
+        avg_col_layout = QVBoxLayout(avg_col)
+        avg_col_layout.setContentsMargins(0, 0, 0, 0)
+        avg_col_layout.setSpacing(0)
+
+        self._average_heatmap = HeatmapWidget("Running Average")
+        self._average_heatmap.enable_cursors(True)
+        self._average_heatmap.cursors_changed.connect(self._on_cursor_changed)
+        avg_col_layout.addWidget(self._average_heatmap)
+
+        # Spectrum wrapper — left spacer matches HeatmapWidget's y-label (20 px + 4 px spacing)
+        # so the plot x-axis aligns with the heatmap image area.
+        spectrum_outer = QWidget()
+        spectrum_outer.setFixedHeight(_SPECTRUM_ROW_H)
+        so_layout = QHBoxLayout(spectrum_outer)
+        so_layout.setContentsMargins(4, 4, 4, 4)
+        so_layout.setSpacing(4)
+        y_counts_label = VerticalLabel("Counts")
+        y_counts_label.setFixedWidth(20)
+        so_layout.addWidget(y_counts_label)
+        self._spectrum_plot = SpectrumPlotWidget()
+        self._spectrum_plot.cursors_changed.connect(self._on_spectrum_cursors_changed)
+        so_layout.addWidget(self._spectrum_plot)
+        avg_col_layout.addWidget(spectrum_outer)
+
+        right_layout.addWidget(avg_col)
 
         content_layout.addWidget(right_panel, stretch=1)
         layout.addLayout(content_layout, stretch=1)
@@ -486,6 +614,64 @@ class OperatorTab(QWidget):
     def _on_stop_clicked(self):
         self.stop_requested.emit()
 
+    @Slot(int, float, float)
+    def _on_cursor_changed(self, pair_idx: int, frac_a: float, frac_b: float) -> None:
+        """Recompute spectra whenever a heatmap ROI cursor is moved."""
+        self._update_spectra()
+
+    @Slot(float, float)
+    def _on_spectrum_cursors_changed(self, frac_a: float, frac_b: float) -> None:
+        """Update pixel/eV readout whenever a spectrum vertical cursor is moved."""
+        self._update_cursor_readout()
+
+    def _update_cursor_readout(self) -> None:
+        """Refresh the pixel and eV position labels for the two vertical cursors."""
+        n = self._n_energy
+        if n is None or n < 2:
+            for lbl in self._cursor_px_labels + self._cursor_ev_labels:
+                lbl.setText("--")
+            return
+
+        frac_a, frac_b = self._spectrum_plot.get_cursor_fracs()
+        x_a = frac_a * (n - 1)
+        x_b = frac_b * (n - 1)
+
+        ev_per_px = self._ev_per_pixel.value()
+        ev_at_x0 = self._ev_at_x0.value()
+        eV_a = x_a * ev_per_px + ev_at_x0
+        eV_b = x_b * ev_per_px + ev_at_x0
+
+        dx = abs(x_b - x_a)
+        deV = abs(eV_b - eV_a)
+
+        self._cursor_px_labels[0].setText(f"{x_a:.1f}")
+        self._cursor_px_labels[1].setText(f"{x_b:.1f}")
+        self._cursor_px_labels[2].setText(f"{dx:.1f}")
+        self._cursor_ev_labels[0].setText(f"{eV_a:.2f}")
+        self._cursor_ev_labels[1].setText(f"{eV_b:.2f}")
+        self._cursor_ev_labels[2].setText(f"{deV:.2f}")
+
+    def _update_spectra(self) -> None:
+        """Bin the average heatmap between each cursor pair and update the spectrum plot.
+
+        Data shape is (n_energy, n_time).  The display shows ``flipud(data.T)``,
+        so the top of the display corresponds to the *last* time bin and the
+        bottom to time bin 0.  Cursor fraction 0.0 = display top = high time
+        bin index; 1.0 = display bottom = time bin 0.
+        """
+        data = self._last_avg_2d
+        if data is None or data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
+            return
+        n_t = data.shape[1]
+        for pair_idx, (frac_a, frac_b) in enumerate(self._average_heatmap.get_cursor_fracs()):
+            # Map display fractions to time-bin indices (display is flipped)
+            ta = int((1.0 - frac_a) * (n_t - 1))
+            tb = int((1.0 - frac_b) * (n_t - 1))
+            t_lo, t_hi = min(ta, tb), max(ta, tb)
+            n_bins = t_hi - t_lo + 1
+            spectrum = data[:, t_lo : t_hi + 1].sum(axis=1) / n_bins
+            self._spectrum_plot.set_spectrum(pair_idx, spectrum)
+
     def _on_colormap_changed(self, name: str):
         self._current_heatmap.set_colormap(name)
         self._average_heatmap.set_colormap(name)
@@ -494,7 +680,12 @@ class OperatorTab(QWidget):
         self._cumulative_sum = None
         self._total_cycles = 0
         self._flush_count = 0
+        self._last_avg_2d = None
+        self._n_energy = None
         self._average_heatmap.clear()
+        self._spectrum_plot.clear()
+        for lbl in self._cursor_px_labels + self._cursor_ev_labels:
+            lbl.setText("--")
         self._update_flush_stats()
         logger.info("Running average reset")
 
@@ -555,8 +746,12 @@ class OperatorTab(QWidget):
                 avg_2d = np.sum(average, axis=1)
 
             avg_stats = f"Over {self._total_cycles} cycles | Avg: {np.sum(avg_2d):.2e}"
+            self._last_avg_2d = avg_2d
+            self._n_energy = avg_2d.shape[0]
             self._average_heatmap.set_data(avg_2d, avg_stats)
             self._update_flush_stats()
+            self._update_spectra()
+            self._update_cursor_readout()
 
     def _update_serval_indicator(self) -> None:
         """Red when JVM down; blinking green until chip temps log; then steady green + Idle/status."""
