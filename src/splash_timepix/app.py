@@ -13,7 +13,6 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 
 import numpy as np
 import psutil
@@ -174,9 +173,9 @@ def main(
 
     # Generate unique scan name
     # Generate initial scan_name (will be regenerated for each new client connection)
-    # UTC, ISO 8601 format (YYYYMMDDTHHMMSSZ) for unambiguous, sortable identifiers
+    # Full UUID4 (36 chars) so it matches the _uuid.txt written by the UI at save time.
     def generate_scan_name():
-        return f"acquisition_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+        return str(uuid.uuid4())
 
     scan_name = generate_scan_name()
 
@@ -440,6 +439,7 @@ def main(
                 flush_count += 1
 
                 flush_metadata = {
+                    "scan_name": scan_name,
                     "cycles_in_flush": flush_every_n_cycles,
                     "total_cycles": cycle_count,
                     "flush_number": flush_count,

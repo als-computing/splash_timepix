@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -861,11 +862,11 @@ class OperatorTab(QWidget):
 
     def save_average_data(
         self, output_dir: str, filename_base: str
-    ) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
-        """Save the average heatmap as PNG, CSV, and metadata as JSON."""
+    ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path]]:
+        """Save the average heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, UUID, and metadata as JSON."""
         if self._cumulative_sum is None or self._total_cycles == 0:
             logger.warning("No data to save")
-            return None, None, None
+            return None, None, None, None, None, None
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -876,7 +877,20 @@ class OperatorTab(QWidget):
         else:
             avg_2d = np.sum(average, axis=1)
 
-        # Save CSV
+        # Save UUID — use the scan_name from ZMQ metadata so it matches what the
+        # streaming server already broadcast to downstream services.  Fall back to
+        # a fresh UUID4 if metadata isn't available (e.g. simulator without ZMQ).
+        meta_for_uuid = self._last_metadata or {}
+        scan_uuid = meta_for_uuid.get("scan_name") or str(uuid.uuid4())
+        uuid_path = output_path / f"{filename_base}_uuid.txt"
+        try:
+            uuid_path.write_text(scan_uuid)
+            logger.info(f"Saved UUID: {uuid_path} ({scan_uuid})")
+        except Exception as e:
+            logger.error(f"Failed to save UUID: {e}")
+            uuid_path = None
+
+        # Save average CSV
         csv_path = output_path / f"{filename_base}_avg.csv"
         try:
             np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
@@ -884,6 +898,43 @@ class OperatorTab(QWidget):
         except Exception as e:
             logger.error(f"Failed to save CSV: {e}")
             csv_path = None
+
+        # Save energy-axis CSV (one eV value per x-pixel)
+        energy_path = output_path / f"{filename_base}_energy.csv"
+        try:
+            n_x = avg_2d.shape[0]
+            ev_per_px = self._ev_per_pixel.value()
+            ev_at_x0 = self._ev_at_x0.value()
+            energy_axis = ev_at_x0 + np.arange(n_x) * ev_per_px
+            np.savetxt(energy_path, energy_axis, delimiter=",", fmt="%.6f")
+            logger.info(f"Saved energy axis CSV: {energy_path}")
+        except Exception as e:
+            logger.error(f"Failed to save energy axis CSV: {e}")
+            energy_path = None
+
+        # Save time-axis CSV (one ns value per time bin)
+        # t_delta_ns comes from the ZMQ metadata published by app.py; it is
+        # 1 / (tdc_frequency_hz * n_bins) * 1e9 and is the width of one time bin.
+        time_path = output_path / f"{filename_base}_time_ns.csv"
+        try:
+            n_t = avg_2d.shape[1]
+            meta = self._last_metadata or {}
+            t_delta_ns = meta.get("t_delta_ns")
+            if t_delta_ns is None:
+                # Fallback: reconstruct from tdc_frequency and n_bins if present
+                tdc_hz = meta.get("tdc_frequency_hz")
+                n_bins = meta.get("n_bins") or n_t
+                if tdc_hz and tdc_hz > 0:
+                    t_delta_ns = 1e9 / (tdc_hz * n_bins)
+                else:
+                    t_delta_ns = 1.0  # unknown — bin index only
+                    logger.warning("t_delta_ns not in metadata; time axis will be bin-index units (1 ns/bin assumed)")
+            time_axis = np.arange(n_t) * t_delta_ns
+            np.savetxt(time_path, time_axis, delimiter=",", fmt="%.6f")
+            logger.info(f"Saved time axis CSV: {time_path}")
+        except Exception as e:
+            logger.error(f"Failed to save time axis CSV: {e}")
+            time_path = None
 
         # Save PNG
         png_path = output_path / f"{filename_base}_avg.png"
@@ -928,4 +979,4 @@ class OperatorTab(QWidget):
             logger.error(f"Failed to save JSON: {e}")
             json_path = None
 
-        return png_path, csv_path, json_path
+        return png_path, csv_path, energy_path, time_path, uuid_path, json_path
