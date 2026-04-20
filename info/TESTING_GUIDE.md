@@ -4,15 +4,28 @@ This guide explains how to test the start/stop message implementation in splash_
 
 ## Prerequisites
 
-1. Install splash_timepix (in its repo):
+1. Install uv (if not already installed):
+   
+   On Linux/macOS:
    ```bash
-   cd /path/to/splash_timepix
-   pip install -e .[dev]
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   # Restart your shell or run: source $HOME/.cargo/env
+   ```
+   
+   Or on macOS with Homebrew:
+   ```bash
+   brew install uv
    ```
 
-2. For ArroyoXPS integration: create and use the `arroyoxps` conda environment and install ArroyoXPS there (see ArroyoXPS docs).
+2. Install splash_timepix (in its repo):
+   ```bash
+   cd /path/to/splash_timepix
+   uv sync
+   ```
 
-3. Simulator is included for testing without hardware.
+3. For ArroyoXPS integration: create and use the `arroyoxps` conda environment and install ArroyoXPS there (see ArroyoXPS docs).
+
+4. Simulator is included for testing without hardware.
 
 ---
 
@@ -26,10 +39,8 @@ Use **three terminals**. Start in this order: server first, then listener, then 
 # Go to splash_timepix project
 cd /home/gabrielgazolla/Downloads/task/splash_timepix
 
-# Activate your splash_timepix environment (or base if installed there)
-# conda activate splash_timepix   # if you use one
-
-python -m splash_timepix.app --tdc-frequency 10 --flush-interval 1.0
+# Run with uv (automatically uses the correct Python environment)
+uv run python -m splash_timepix.app --tdc-frequency 10 --flush-interval 1.0
 ```
 
 Leave this running. You should see the server listening (e.g. on port 9090 for TCP, 5657 for ZMQ).
@@ -55,8 +66,8 @@ Leave this running. It will connect to `tcp://localhost:5657` (splash_timepix’
 # Go to splash_timepix project
 cd /home/gabrielgazolla/Downloads/task/splash_timepix
 
-# Same environment as Terminal 1
-python -m splash_timepix.simulator_cli
+# Run with uv
+uv run python -m splash_timepix.simulator_cli
 ```
 
 Then in the simulator CLI:
@@ -130,14 +141,14 @@ This usually means the listener is running in the wrong environment or from the 
 
 ```bash
 cd /path/to/splash_timepix
-python -m splash_timepix.app --tdc-frequency 10 --flush-interval 2.0 --verbose
+uv run python -m splash_timepix.app --tdc-frequency 10 --flush-interval 2.0 --verbose
 ```
 
 #### Terminal 2: Simulator
 
 ```bash
 cd /path/to/splash_timepix
-python -m splash_timepix.simulator_cli
+uv run python -m splash_timepix.simulator_cli
 # In CLI: cps 1000, tdc 10, start 30
 ```
 
@@ -145,7 +156,7 @@ python -m splash_timepix.simulator_cli
 
 ```bash
 cd /path/to/splash_timepix
-python -m splash_timepix.example_zmq_sub
+uv run python -m splash_timepix.example_zmq_sub
 ```
 
 **Expected:** START with config, multiple EVENTs (flushes), STOP when run ends.
@@ -154,7 +165,7 @@ python -m splash_timepix.example_zmq_sub
 
 ```bash
 cd /path/to/splash_timepix
-python -m splash_timepix.example_listener
+uv run python -m splash_timepix.example_listener
 ```
 
 **Expected:** Operator processes START, EVENTs, and STOP.
@@ -163,7 +174,7 @@ python -m splash_timepix.example_listener
 
 ```bash
 cd /path/to/splash_timepix
-python tests/test_start_stop_messages.py
+uv run python tests/test_start_stop_messages.py
 ```
 
 This starts server and simulator in subprocesses, subscribes to ZMQ, and checks that start/event/stop messages are received.
@@ -172,16 +183,16 @@ This starts server and simulator in subprocesses, subscribes to ZMQ, and checks 
 
 ```bash
 cd /path/to/splash_timepix
-pytest tests/test_schemas.py -v
-pytest tests/test_listener.py -v
+uv run pytest tests/test_schemas.py -v
+uv run pytest tests/test_listener.py -v
 ```
 
 ### Method 4: Real hardware (TimePix3)
 
-1. Start server: `cd /path/to/splash_timepix` then `python -m splash_timepix.app --tdc-frequency 1000`
+1. Start server: `cd /path/to/splash_timepix` then `uv run python -m splash_timepix.app --tdc-frequency 1000`
 2. Connect live-cli in another terminal.
 3. Start acquisition from live-cli (or your site workflow).
-4. Monitor: `python -m splash_timepix.example_zmq_sub`
+4. Monitor: `uv run python -m splash_timepix.example_zmq_sub`
 
 ---
 

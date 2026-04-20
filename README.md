@@ -11,17 +11,37 @@ This package provides a pipeline for streaming, pre-processing, and visualizing 
 - **Python 3.9+**
 - **Linux/Ubuntu recommended** (input handling uses `select.select()` which is Unix-specific)
 - TimePix3 detector with ASI live-cli software
+- **uv** (fast Python package installer)
 
 ## Installation
+
+### Install uv (if not already installed)
+
+On Linux/macOS:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Alternatively, on macOS with Homebrew:
+```bash
+brew install uv
+```
+
+After installation, restart your shell or run:
+```bash
+source $HOME/.cargo/env
+```
+
+### Install splash_timepix
 
 Clone the repository and install dependencies:
 ```bash
 git clone https://github.com/als-computing/splash_timepix.git
 cd splash_timepix
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
+uv sync
 ```
+
+Note: `uv sync` automatically creates a virtual environment, installs all dependencies from `pyproject.toml`, and installs the project in editable mode.
 
 ### Dependencies
 
@@ -39,7 +59,7 @@ pip install -e .[dev]
 - Pre-commit hooks are configured in `.pre-commit-config.yaml`
 - To enable pre-commit hooks (recommended):
 ```bash
-pre-commit install
+uv run pre-commit install
 ```
 
 ## Documentation (`info/`)
