@@ -39,7 +39,8 @@ class TestPixelPacketParsing:
         reserved = 0
 
         # Build packet data (36 bits)
-        pixel_data = reserved | (y << 6) | (x << 16) | (tot << 26)
+        # WHY DID YOU HARDCODE THIS, USE THE SIMULATOR DUHHH!
+        pixel_data = reserved | (x << 6) | (y << 16) | (tot << 26)
 
         # Build full 96-bit value
         full_value = pixel_data | (timestamp << 36) | (packet_type << 92)
@@ -115,7 +116,7 @@ class TestPixelPacketParsing:
         y = y & 0x3FF  # 10 bits
         reserved = reserved & 0x3F  # 6 bits
 
-        pixel_data = reserved | (y << 6) | (x << 16) | (tot << 26)
+        pixel_data = reserved | (x << 6) | (y << 16) | (tot << 26)
         full_value = pixel_data | (timestamp << 36) | (packet_type << 92)
         return full_value.to_bytes(12, byteorder="big")
 

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
-from .widgets import HeatmapWidget, SpectrumPlotWidget, StatusIndicator, VerticalLabel, get_colormap
+from .widgets import CURSOR_COLORS, HeatmapWidget, SpectrumPlotWidget, StatusIndicator, VerticalLabel, get_colormap
 from .workers import FlushData, HeartbeatStatus, ServalStatus
 
 logger = logging.getLogger(__name__)
@@ -166,12 +166,63 @@ class OperatorTab(QWidget):
         self._colormap_combo.currentTextChanged.connect(self._on_colormap_changed)
         view_layout.addWidget(self._colormap_combo)
 
+        cmap_sep = QFrame()
+        cmap_sep.setFrameShape(QFrame.Shape.VLine)
+        cmap_sep.setFixedWidth(1)
+        cmap_sep.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
+        view_layout.addWidget(cmap_sep)
+
+        self._vcursor_heatmap_btn = QPushButton("| Cursors")
+        self._vcursor_heatmap_btn.setCheckable(True)
+        self._vcursor_heatmap_btn.setChecked(True)
+        self._vcursor_heatmap_btn.setStyleSheet(theme.checkable_button_style())
+        self._vcursor_heatmap_btn.setToolTip("Show/hide energy cursor lines in both heatmaps")
+        self._vcursor_heatmap_btn.toggled.connect(self._on_vcursor_heatmap_toggled)
+        view_layout.addWidget(self._vcursor_heatmap_btn)
+
         view_layout.addSpacing(12)
 
-        self._reset_avg_btn = QPushButton("Reset Avg")
-        self._reset_avg_btn.setStyleSheet(theme.secondary_button_style())
-        self._reset_avg_btn.clicked.connect(self._reset_average)
-        view_layout.addWidget(self._reset_avg_btn)
+        # Zoom button group
+        zoom_group = QFrame()
+        zoom_group.setStyleSheet(
+            f"QFrame {{ border: 1px solid {theme.BORDER_SUBTLE}; border-radius: 4px;"
+            f" background-color: {theme.BG_DARK}; }}"
+        )
+        zoom_layout = QHBoxLayout(zoom_group)
+        zoom_layout.setContentsMargins(2, 2, 2, 2)
+        zoom_layout.setSpacing(2)
+
+        self._zoom_rect_btn = QPushButton("⊞ Zoom")
+        self._zoom_rect_btn.setCheckable(True)
+        self._zoom_rect_btn.setChecked(True)
+        self._zoom_rect_btn.setStyleSheet(theme.checkable_button_style())
+        self._zoom_rect_btn.clicked.connect(lambda: self._set_zoom_mode("rect"))
+        zoom_layout.addWidget(self._zoom_rect_btn)
+
+        self._zoom_h_btn = QPushButton("↔ H-Zoom")
+        self._zoom_h_btn.setCheckable(True)
+        self._zoom_h_btn.setStyleSheet(theme.checkable_button_style())
+        self._zoom_h_btn.clicked.connect(lambda: self._set_zoom_mode("h"))
+        zoom_layout.addWidget(self._zoom_h_btn)
+
+        self._zoom_v_btn = QPushButton("↕ V-Zoom")
+        self._zoom_v_btn.setCheckable(True)
+        self._zoom_v_btn.setStyleSheet(theme.checkable_button_style())
+        self._zoom_v_btn.clicked.connect(lambda: self._set_zoom_mode("v"))
+        zoom_layout.addWidget(self._zoom_v_btn)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
+        zoom_layout.addWidget(sep)
+
+        self._reset_view_btn = QPushButton("⟳ Reset Zoom")
+        self._reset_view_btn.setStyleSheet(theme.checkable_button_style())
+        self._reset_view_btn.clicked.connect(self._reset_view)
+        zoom_layout.addWidget(self._reset_view_btn)
+
+        view_layout.addWidget(zoom_group)
 
         top_layout.addWidget(view_group)
         top_layout.addStretch()
@@ -280,6 +331,24 @@ class OperatorTab(QWidget):
         self._callback_batch_input.setToolTip(batch_label.toolTip())
         batch_row.addWidget(self._callback_batch_input)
         settings_layout.addLayout(batch_row)
+
+        # n_bins
+        n_bins_row = QHBoxLayout()
+        n_bins_label = QLabel("Time bins (n_bins):")
+        n_bins_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        n_bins_label.setToolTip(
+            "Number of time bins per TDC cycle. Used as the fallback when the streaming server "
+            "cannot derive bin count from t_delta_ns. Default: 10000."
+        )
+        n_bins_row.addWidget(n_bins_label)
+        self._n_bins_input = QSpinBox()
+        self._n_bins_input.setRange(500, 50_000)
+        self._n_bins_input.setValue(10_000)
+        self._n_bins_input.setSingleStep(10)
+        self._n_bins_input.setStyleSheet(theme.input_style())
+        self._n_bins_input.setToolTip(n_bins_label.toolTip())
+        n_bins_row.addWidget(self._n_bins_input)
+        settings_layout.addLayout(n_bins_row)
 
         _tt_duration = (
             "Acquisition length in seconds for Serval-backed runs and the simulator. "
@@ -439,39 +508,110 @@ class OperatorTab(QWidget):
             f"QFrame {{ background-color: {theme.BG_PANEL}; "
             f"border: 1px solid {theme.BORDER_SUBTLE}; border-radius: 4px; }}"
         )
-        rp_layout = QVBoxLayout(readout_panel)
-        rp_layout.setContentsMargins(10, 8, 10, 8)
-        rp_layout.setSpacing(6)
+        rp_outer = QHBoxLayout(readout_panel)
+        rp_outer.setContentsMargins(0, 0, 0, 0)
+        rp_outer.setSpacing(0)
 
-        # Calibration controls row
+        # Left 2/3: calibration controls + cursor readout
+        rp_left = QWidget()
+        rp_layout = QVBoxLayout(rp_left)
+        rp_layout.setContentsMargins(10, 8, 8, 8)
+        rp_layout.setSpacing(4)
+
+        # Vertical divider between left and right sections
+        sep_v = QFrame()
+        sep_v.setFrameShape(QFrame.Shape.VLine)
+        sep_v.setFixedWidth(1)
+        sep_v.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
+
+        # Right 1/3: ROI pair legend + active toggle buttons
+        rp_right = QWidget()
+        rp_right_layout = QVBoxLayout(rp_right)
+        rp_right_layout.setContentsMargins(8, 6, 8, 6)
+        rp_right_layout.setSpacing(4)
+
+        _ROI_LABELS = ("ROI 1", "ROI 2", "ROI 3", "ROI 4", "ROI 5")
+        self._roi_toggle_btns: list[QPushButton] = []
+
+        _toggle_style = f"""
+            QPushButton {{
+                background-color: {theme.GREY_DARK};
+                color: {theme.TEXT_MUTED};
+                border: 1px solid {theme.BORDER_SUBTLE};
+                border-radius: 3px;
+                padding: 1px 4px;
+                font-size: 10px;
+            }}
+            QPushButton:checked {{
+                background-color: {theme.BLUE_PRIMARY};
+                color: {theme.TEXT_PRIMARY};
+                border-color: {theme.BLUE_LIGHT_2};
+            }}
+        """
+
+        for i in range(5):
+            roi_row = QHBoxLayout()
+            roi_row.setSpacing(6)
+
+            swatch = QLabel()
+            swatch.setFixedSize(16, 3)
+            swatch.setStyleSheet(f"background-color: {CURSOR_COLORS[i]}; border: none;")
+            roi_row.addWidget(swatch, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            lbl = QLabel(_ROI_LABELS[i])
+            lbl.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
+            roi_row.addWidget(lbl)
+            roi_row.addStretch()
+
+            active_default = i < 2
+            btn = QPushButton("On" if active_default else "Off")
+            btn.setCheckable(True)
+            btn.setChecked(active_default)
+            btn.setFixedWidth(36)
+            btn.setStyleSheet(_toggle_style)
+            roi_row.addWidget(btn)
+            rp_right_layout.addLayout(roi_row)
+            self._roi_toggle_btns.append(btn)
+
+        rp_right_layout.addStretch()
+
+        rp_outer.addWidget(rp_left, stretch=2)
+        rp_outer.addWidget(sep_v)
+        rp_outer.addWidget(rp_right, stretch=1)
+
+        # Calibration controls: label above each spinbox, the two controls side by side
         cal_row = QHBoxLayout()
-        cal_row.setSpacing(6)
+        cal_row.setSpacing(8)
 
-        ev_px_lbl = QLabel("eV/pixel")
-        ev_px_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 11px;")
-        cal_row.addWidget(ev_px_lbl)
-        self._ev_per_pixel = QDoubleSpinBox()
-        self._ev_per_pixel.setRange(-10000.0, 10000.0)
-        self._ev_per_pixel.setDecimals(4)
-        self._ev_per_pixel.setValue(1.0)
-        self._ev_per_pixel.setSingleStep(0.001)
-        self._ev_per_pixel.setStyleSheet(theme.input_style())
-        self._ev_per_pixel.setFixedWidth(100)
-        cal_row.addWidget(self._ev_per_pixel)
+        pxev_col = QVBoxLayout()
+        pxev_col.setSpacing(2)
+        ev_px_lbl = QLabel("pixel/eV")
+        ev_px_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+        pxev_col.addWidget(ev_px_lbl)
+        self._pixel_per_ev = QDoubleSpinBox()
+        self._pixel_per_ev.setRange(-10000.0, 10000.0)
+        self._pixel_per_ev.setDecimals(4)
+        self._pixel_per_ev.setValue(12.796)
+        self._pixel_per_ev.setSingleStep(0.001)
+        self._pixel_per_ev.setStyleSheet(theme.input_style())
+        self._pixel_per_ev.setFixedWidth(90)
+        pxev_col.addWidget(self._pixel_per_ev)
+        cal_row.addLayout(pxev_col)
 
-        cal_row.addSpacing(16)
-
-        ev_x0_lbl = QLabel("eV @ x=0")
-        ev_x0_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 11px;")
-        cal_row.addWidget(ev_x0_lbl)
-        self._ev_at_x0 = QDoubleSpinBox()
-        self._ev_at_x0.setRange(-1_000_000.0, 1_000_000.0)
-        self._ev_at_x0.setDecimals(2)
-        self._ev_at_x0.setValue(0.0)
-        self._ev_at_x0.setSingleStep(0.1)
-        self._ev_at_x0.setStyleSheet(theme.input_style())
-        self._ev_at_x0.setFixedWidth(100)
-        cal_row.addWidget(self._ev_at_x0)
+        evmid_col = QVBoxLayout()
+        evmid_col.setSpacing(2)
+        ev_mid_lbl = QLabel("eV @ midpoint")
+        ev_mid_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+        evmid_col.addWidget(ev_mid_lbl)
+        self._ev_at_mid = QDoubleSpinBox()
+        self._ev_at_mid.setRange(-1_000_000.0, 1_000_000.0)
+        self._ev_at_mid.setDecimals(2)
+        self._ev_at_mid.setValue(0.0)
+        self._ev_at_mid.setSingleStep(0.1)
+        self._ev_at_mid.setStyleSheet(theme.input_style())
+        self._ev_at_mid.setFixedWidth(90)
+        evmid_col.addWidget(self._ev_at_mid)
+        cal_row.addLayout(evmid_col)
         cal_row.addStretch()
         rp_layout.addLayout(cal_row)
 
@@ -483,14 +623,14 @@ class OperatorTab(QWidget):
 
         # Readout grid: columns = name | pixel | eV
         grid = QGridLayout()
-        grid.setSpacing(4)
+        grid.setSpacing(2)
         grid.setColumnStretch(0, 2)
         grid.setColumnStretch(1, 3)
         grid.setColumnStretch(2, 3)
 
         for col, text in enumerate(["", "Pixel", "eV"]):
             hdr = QLabel(text)
-            hdr.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+            hdr.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 9px;")
             hdr.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             grid.addWidget(hdr, 0, col)
 
@@ -499,17 +639,17 @@ class OperatorTab(QWidget):
         row_names = ["Cursor A", "Cursor B", "Δ"]
         for row_idx, name in enumerate(row_names):
             name_lbl = QLabel(name)
-            name_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+            name_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 9px;")
             grid.addWidget(name_lbl, row_idx + 1, 0)
 
             px_lbl = QLabel("--")
-            px_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY}; font-size: 11px;")
+            px_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY};")
             px_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             grid.addWidget(px_lbl, row_idx + 1, 1)
             self._cursor_px_labels.append(px_lbl)
 
             ev_lbl = QLabel("--")
-            ev_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY}; font-size: 11px;")
+            ev_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY};")
             ev_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             grid.addWidget(ev_lbl, row_idx + 1, 2)
             self._cursor_ev_labels.append(ev_lbl)
@@ -517,8 +657,10 @@ class OperatorTab(QWidget):
         rp_layout.addLayout(grid)
         rp_layout.addStretch()
 
-        self._ev_per_pixel.valueChanged.connect(self._update_cursor_readout)
-        self._ev_at_x0.valueChanged.connect(self._update_cursor_readout)
+        self._pixel_per_ev.valueChanged.connect(self._update_cursor_readout)
+        self._ev_at_mid.valueChanged.connect(self._update_cursor_readout)
+        self._pixel_per_ev.valueChanged.connect(self._update_ruler_energy_scale)
+        self._ev_at_mid.valueChanged.connect(self._update_ruler_energy_scale)
 
         flush_col_layout.addWidget(readout_panel)
         right_layout.addWidget(flush_col)
@@ -549,7 +691,29 @@ class OperatorTab(QWidget):
         so_layout.addWidget(self._spectrum_plot)
         avg_col_layout.addWidget(spectrum_outer)
 
+        self._current_heatmap.view_changed.connect(self._average_heatmap.set_view)
+        self._average_heatmap.view_changed.connect(self._current_heatmap.set_view)
         right_layout.addWidget(avg_col)
+
+        # Wire ROI toggle buttons now that both heatmap and spectrum plot exist
+        for _i, _btn in enumerate(self._roi_toggle_btns):
+
+            def _make_toggle(pair_idx, button):
+                def handler(checked):
+                    button.setText("On" if checked else "Off")
+                    self._average_heatmap.set_cursor_pair_active(pair_idx, checked)
+                    self._spectrum_plot.set_pair_active(pair_idx, checked)
+                    self._sync_cursor_overlay()
+
+                return handler
+
+            _btn.toggled.connect(_make_toggle(_i, _btn))
+
+        self._average_heatmap.cursors_changed.connect(lambda *_: self._sync_cursor_overlay())
+        self._sync_cursor_overlay()
+
+        self._spectrum_plot.cursors_changed.connect(self._sync_vcursor_overlay)
+        self._sync_vcursor_overlay()
 
         content_layout.addWidget(right_panel, stretch=1)
         layout.addLayout(content_layout, stretch=1)
@@ -591,6 +755,7 @@ class OperatorTab(QWidget):
             "tdc_channel": self._get_tdc_channel(),
             "tdc_edge": self._get_tdc_edge(),
             "callback_batch_size": int(self._callback_batch_input.value()),
+            "n_bins": int(self._n_bins_input.value()),
             "duration": self._duration_input.value(),
             "output_dir": self._output_input.text(),
         }
@@ -625,6 +790,22 @@ class OperatorTab(QWidget):
         """Update pixel/eV readout whenever a spectrum vertical cursor is moved."""
         self._update_cursor_readout()
 
+    def _on_vcursor_heatmap_toggled(self, checked: bool) -> None:
+        self._current_heatmap.set_vcursors_on_heatmap(checked)
+        self._average_heatmap.set_vcursors_on_heatmap(checked)
+
+    def _sync_vcursor_overlay(self, frac_a=None, frac_b=None) -> None:
+        if frac_a is None:
+            frac_a, frac_b = self._spectrum_plot.get_cursor_fracs()
+        self._current_heatmap.set_vcursor_overlay(frac_a, frac_b)
+        self._average_heatmap.set_vcursor_overlay(frac_a, frac_b)
+
+    def _sync_cursor_overlay(self) -> None:
+        """Push the average heatmap cursor positions into the current-flush heatmap as a read-only overlay."""
+        fracs = self._average_heatmap.get_cursor_fracs()
+        active = [btn.isChecked() for btn in self._roi_toggle_btns]
+        self._current_heatmap.update_cursor_overlay(fracs, active)
+
     def _update_cursor_readout(self) -> None:
         """Refresh the pixel and eV position labels for the two vertical cursors."""
         n = self._n_energy
@@ -637,10 +818,10 @@ class OperatorTab(QWidget):
         x_a = frac_a * (n - 1)
         x_b = frac_b * (n - 1)
 
-        ev_per_px = self._ev_per_pixel.value()
-        ev_at_x0 = self._ev_at_x0.value()
-        eV_a = x_a * ev_per_px + ev_at_x0
-        eV_b = x_b * ev_per_px + ev_at_x0
+        pixel_per_ev = self._pixel_per_ev.value()
+        ev_at_mid = self._ev_at_mid.value()
+        eV_a = ev_at_mid + (x_a - n / 2) / pixel_per_ev
+        eV_b = ev_at_mid + (x_b - n / 2) / pixel_per_ev
 
         dx = abs(x_b - x_a)
         deV = abs(eV_b - eV_a)
@@ -651,6 +832,19 @@ class OperatorTab(QWidget):
         self._cursor_ev_labels[0].setText(f"{eV_a:.2f}")
         self._cursor_ev_labels[1].setText(f"{eV_b:.2f}")
         self._cursor_ev_labels[2].setText(f"{deV:.2f}")
+
+    def _update_ruler_energy_scale(self) -> None:
+        n = self._n_energy
+        if n is None:
+            return
+        pixel_per_ev = self._pixel_per_ev.value()
+        if pixel_per_ev == 0:
+            return
+        ev_at_mid = self._ev_at_mid.value()
+        ev_per_pixel = 1.0 / pixel_per_ev
+        ev_at_zero = ev_at_mid - (n / 2) * ev_per_pixel
+        for hm in (self._current_heatmap, self._average_heatmap):
+            hm.set_x_scale(ev_per_pixel, ev_at_zero)
 
     def _update_spectra(self) -> None:
         """Bin the average heatmap between each cursor pair and update the spectrum plot.
@@ -690,6 +884,20 @@ class OperatorTab(QWidget):
         self._update_flush_stats()
         logger.info("Running average reset")
 
+    def _set_zoom_mode(self, mode: str) -> None:
+        for btn, m in [
+            (self._zoom_rect_btn, "rect"),
+            (self._zoom_h_btn, "h"),
+            (self._zoom_v_btn, "v"),
+        ]:
+            btn.setChecked(m == mode)
+        self._current_heatmap.set_zoom_mode(mode)
+        self._average_heatmap.set_zoom_mode(mode)
+
+    def _reset_view(self) -> None:
+        self._current_heatmap.reset_view()
+        self._average_heatmap.reset_view()
+
     def _update_flush_stats(self):
         self._stats_labels["flushes_cycles"].setText(f"{self._flush_count} ({self._total_cycles:,})")
         if self._total_cycles > 0 and self._cumulative_sum is not None:
@@ -710,6 +918,7 @@ class OperatorTab(QWidget):
         self._tdc_ch_combo.setEnabled(not acquiring)
         self._tdc_edge_combo.setEnabled(not acquiring)
         self._callback_batch_input.setEnabled(not acquiring)
+        self._n_bins_input.setEnabled(not acquiring)
         self._duration_input.setEnabled(not acquiring)
         self._output_input.setEnabled(not acquiring)
         self._browse_output_btn.setEnabled(not acquiring)
@@ -753,6 +962,18 @@ class OperatorTab(QWidget):
             self._update_flush_stats()
             self._update_spectra()
             self._update_cursor_readout()
+            t_delta_ns = metadata.get("t_delta_ns")
+            if t_delta_ns is None:
+                tdc_hz = metadata.get("tdc_frequency_hz")
+                n_t = avg_2d.shape[1]
+                n_bins_meta = metadata.get("n_bins") or n_t
+                if tdc_hz and tdc_hz > 0:
+                    t_delta_ns = 1e9 / (tdc_hz * n_bins_meta)
+            if t_delta_ns:
+                n_t = avg_2d.shape[1]
+                for hm in (self._current_heatmap, self._average_heatmap):
+                    hm.set_axis_info(t_delta_ns, n_t)
+            self._update_ruler_energy_scale()
 
     def _update_serval_indicator(self) -> None:
         """Red when JVM down; blinking green until chip temps log; then steady green + Idle/status."""
@@ -903,9 +1124,9 @@ class OperatorTab(QWidget):
         energy_path = output_path / f"{filename_base}_energy.csv"
         try:
             n_x = avg_2d.shape[0]
-            ev_per_px = self._ev_per_pixel.value()
-            ev_at_x0 = self._ev_at_x0.value()
-            energy_axis = ev_at_x0 + np.arange(n_x) * ev_per_px
+            pixel_per_ev = self._pixel_per_ev.value()
+            ev_at_mid = self._ev_at_mid.value()
+            energy_axis = ev_at_mid + (np.arange(n_x) - n_x / 2) / pixel_per_ev
             np.savetxt(energy_path, energy_axis, delimiter=",", fmt="%.6f")
             logger.info(f"Saved energy axis CSV: {energy_path}")
         except Exception as e:
