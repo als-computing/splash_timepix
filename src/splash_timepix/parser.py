@@ -222,9 +222,9 @@ class PacketParser:
 
     def _parse_pixel(self, packet_type: int, timestamp: int, specific_data: int) -> PixelPacket:
         reserved = specific_data & 0x3F
-        # Wire format: reserved(0-5) | y(6-15) | x(16-25) | tot(26-35)
-        y = (specific_data >> 6) & 0x3FF
-        x = (specific_data >> 16) & 0x3FF
+        # Wire format: reserved(0-5) | x(6-15) | y(16-25) | tot(26-35)
+        x = (specific_data >> 6) & 0x3FF
+        y = (specific_data >> 16) & 0x3FF
         tot = (specific_data >> 26) & 0x3FF
         return PixelPacket(
             packet_type=packet_type,
@@ -354,8 +354,8 @@ class PacketParser:
         pixel_specific = specific[pixel_mask]
         pixel_timestamps = timestamps[pixel_mask]
 
-        pixel_y = ((pixel_specific >> 6) & 0x3FF).astype(np.int32)
-        pixel_x = ((pixel_specific >> 16) & 0x3FF).astype(np.int32)
+        pixel_x = ((pixel_specific >> 6) & 0x3FF).astype(np.int32)
+        pixel_y = ((pixel_specific >> 16) & 0x3FF).astype(np.int32)
         pixel_tot = ((pixel_specific >> 26) & 0x3FF).astype(np.int32)
 
         # ---- EXTRACT TDC FIELDS ----
