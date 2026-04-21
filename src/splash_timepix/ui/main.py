@@ -180,6 +180,7 @@ class MainWindow(QMainWindow):
         tdc_channel = params["tdc_channel"]
         tdc_edge = params["tdc_edge"]
         callback_batch_size = params.get("callback_batch_size", 10_000)
+        n_bins = params.get("n_bins", 350)
         duration = params["duration"]
 
         logger.info(
@@ -196,6 +197,7 @@ class MainWindow(QMainWindow):
             tdc_channel,
             tdc_edge,
             callback_batch_size=callback_batch_size,
+            n_bins=n_bins,
             exit_on_disconnect=True,
         ):
             QMessageBox.warning(self, "Error", "Failed to start streaming server")

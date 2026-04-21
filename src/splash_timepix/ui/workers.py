@@ -333,6 +333,7 @@ class ProcessManager(QObject):
         tdc_channel: int = 1,
         tdc_edge: str = "rising",
         callback_batch_size: int = 10_000,
+        n_bins: int = 350,
         collapse_y: bool = True,
         exit_on_disconnect: bool = True,
     ) -> bool:
@@ -347,6 +348,8 @@ class ProcessManager(QObject):
             tdc_edge,
             "--callback-batch-size",
             str(int(callback_batch_size)),
+            "--n-bins",
+            str(n_bins),
         ]
         if collapse_y:
             args.append("--collapse-y")

@@ -57,7 +57,7 @@ class PacketBuilder:
         assert 0 <= reserved <= 63, f"Reserved out of range: {reserved}"
 
         packet_type = PacketType.PIXEL
-        pixel_data = reserved | (y << 6) | (x << 16) | (tot << 26)
+        pixel_data = reserved | (x << 6) | (y << 16) | (tot << 26)
         full_value = pixel_data | (timestamp << 36) | (packet_type << 92)
 
         return full_value.to_bytes(12, byteorder="big")
