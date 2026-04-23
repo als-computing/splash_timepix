@@ -98,6 +98,12 @@ class SimulatorSource:
             print("Auto-sending is already running")
             return
 
+        # Reconnect if a previous stop disconnected the socket
+        if self.socket is None:
+            print("Reconnecting to server for new acquisition...")
+            if not self.connect():
+                return
+
         self.running = True
         self.send_thread = threading.Thread(target=self._auto_send_worker, args=(duration,), daemon=True)
         self.send_thread.start()
@@ -108,14 +114,17 @@ class SimulatorSource:
 
     def stop_auto_sending(self) -> None:
         """Stop automatic message sending."""
-        if not self.running:
-            print("Auto-sending is not running")
-            return
-
-        self.running = False
-        if self.send_thread and self.send_thread.is_alive():
-            self.send_thread.join(timeout=5)
-        print("Stopped auto-sending messages")
+        if self.running:
+            self.running = False
+            if self.send_thread and self.send_thread.is_alive():
+                self.send_thread.join(timeout=5)
+            print("Stopped auto-sending messages")
+        # Disconnect regardless of whether the stream was manually stopped or
+        # ended naturally (timer expired).  This is what signals end-of-acquisition
+        # to the server so it publishes a ZMQ stop message.  Safe to call even
+        # when already disconnected.  A reconnect happens automatically the next
+        # time start_auto_sending() is called.
+        self.disconnect()
 
     def run_blocking(self, duration: float) -> None:
         """

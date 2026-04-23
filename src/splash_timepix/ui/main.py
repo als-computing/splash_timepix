@@ -326,13 +326,17 @@ class MainWindow(QMainWindow):
             self._save_on_stop(mode)
 
         if mode in ("simulator", "replay"):
-            # For simulator/replay, just kill the processes directly
-            self._engineering_tab.append_system_log(f"Stopping {mode} processes...")
-            self._process_manager.stop_process("simulator" if mode == "simulator" else "live-cli")
-            self._process_manager.stop_process("streaming")
-            self._acquiring = False
-            self._operator_tab.set_acquiring(False)
-            self._status_bar.showMessage(f"{mode.capitalize()} stopped")
+            # Kill only the data source (simulator or live-cli).  The streaming
+            # server was launched with --exit-on-disconnect: once it detects the
+            # TCP disconnect it will do the final flush, publish the ZMQ stop
+            # message, and exit on its own.  _on_acquisition_complete() fires
+            # when the "streaming" process exits (see _on_process_stopped).
+            proc_name = "simulator" if mode == "simulator" else "live-cli"
+            self._engineering_tab.append_system_log(f"Stopping {proc_name}...")
+            self._process_manager.stop_process(proc_name)
+            self._status_bar.showMessage("Waiting for streaming server to finish...")
+            # Safety net: force-kill streaming after 6 s if it has not exited.
+            QTimer.singleShot(6000, self._force_stop_streaming_if_still_running)
         else:
             # For real acquisition, call stop.py via Serval
             self._run_stop_script()
@@ -385,6 +389,21 @@ class MainWindow(QMainWindow):
         if not any([png_path, csv_path, energy_path, time_path, uuid_path, json_path]):
             self._engineering_tab.append_system_log("No data to save")
 
+    def _force_stop_streaming_if_still_running(self):
+        """Safety net: force-kill streaming server if it has not exited on its own.
+
+        Called ~6 s after the data source (simulator / live-cli) was stopped.
+        Under normal operation the streaming server exits well within that window
+        via --exit-on-disconnect; this only fires if something went wrong.
+        """
+        if self._process_manager.is_running("streaming"):
+            logger.warning("Streaming server still running after timeout, force stopping")
+            self._engineering_tab.append_system_log(
+                "WARNING: Streaming server did not exit after disconnect, force stopping..."
+            )
+            self._process_manager.stop_process("streaming")
+            # _on_process_stopped("streaming") will fire and call _on_acquisition_complete.
+
     def _run_stop_script(self):
         """Stop acquisition via Serval."""
         try:
@@ -433,9 +452,11 @@ class MainWindow(QMainWindow):
         if self._acquiring:
             if name == "acquisition":
                 self._on_acquisition_complete()
-            elif name == "simulator" and mode == "simulator":
-                self._on_acquisition_complete()
-            elif name == "live-cli" and mode == "replay":
+            elif name == "streaming" and mode in ("simulator", "replay"):
+                # Streaming server exited (either naturally via --exit-on-disconnect
+                # after the data source disconnected, or via the safety-net force-kill).
+                # This is the authoritative completion signal for these modes: by the
+                # time streaming exits, the final flush and ZMQ stop have been sent.
                 self._on_acquisition_complete()
 
     @Slot(str, str)
