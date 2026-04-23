@@ -486,6 +486,44 @@ def main(
                 mask = pixel_indices > last_boundary
                 bin_pixels(mask)
 
+    def do_final_flush() -> None:
+        """Flush any data remaining in the accumulator before sending a stop message.
+
+        The normal flush is triggered by an incoming TDC pulse closing the previous
+        cycle.  When a stream ends the last N partial cycles never see a closing TDC,
+        so this helper is called at each stop site to publish that residual data as
+        one last event message before the stop control message goes out.
+        """
+        nonlocal flush_count, xyt_array
+
+        with xyt_lock:
+            xyt_array += local_accumulator
+            has_data = bool(np.any(xyt_array))
+            if has_data:
+                array_copy = xyt_array.copy()
+            xyt_array.fill(0)
+
+        local_accumulator.fill(0)
+
+        if not has_data:
+            return
+
+        flush_count += 1
+        partial_cycles = cycle_count % flush_every_n_cycles if flush_every_n_cycles > 0 else cycle_count
+        flush_metadata = {
+            "scan_name": scan_name,
+            "cycles_in_flush": partial_cycles,
+            "total_cycles": cycle_count,
+            "flush_number": flush_count,
+            "pixels_discarded_before_trigger": int(pixels_before_trigger),
+            "pixels_discarded_outside_window": int(pixels_outside_window),
+        }
+        try:
+            xyt_queue.put_nowait((array_copy, flush_metadata))
+            logger.info(f"Final flush #{flush_count}: {partial_cycles} partial cycles flushed before stop")
+        except queue.Full:
+            logger.warning("Processing queue full, dropping final flush")
+
     # Set the callback
     server.set_data_callback(data_callback)
 
@@ -536,6 +574,7 @@ def main(
                 logger.info("Client disconnected, initiating shutdown...")
                 # Send stop message before shutdown
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    do_final_flush()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
                     stop_msg = TimePixStop(
                         scan_name=scan_name,
@@ -580,6 +619,38 @@ def main(
                 local_accumulator.fill(0)
                 logger.info(f"New client connected - resetting acquisition state. New scan: {scan_name}")
                 print(f"New client connected - resetting acquisition state. New scan: {scan_name}")
+
+                # Send start message immediately on client connect so that ZMQ
+                # subscribers receive it before any data — even when count rates
+                # are zero and data_callback may never fire before STOP.
+                # data_callback also tries to send the start message (guarded by
+                # start_message_sent) as an immediate fallback for the first
+                # data batch if the main loop is mid-sleep when data arrives.
+                if message_queue is not None:
+                    acquisition_start_time = current_time
+                    start_msg = TimePixStart(
+                        scan_name=scan_name,
+                        tdc_frequency_hz=tdc_frequency,
+                        t_delta_ns=t_delta_ns,
+                        t_cycle_ns=t_cycle / 1e3,
+                        n_bins=n_bins,
+                        detector_size_x=detector_size_x,
+                        detector_size_y=detector_size_y,
+                        flush_interval_s=flush_interval,
+                        cycles_per_flush=max(1, int(flush_interval * tdc_frequency)),
+                        tdc_channel=tdc_ch,
+                        tdc_edge=tdc_edge,
+                        collapse_y=collapse_y,
+                        zmq_port=zmq_port,
+                        tcp_port=port,
+                    )
+                    try:
+                        message_queue.put_nowait(start_msg.model_dump())
+                        start_message_sent = True
+                        logger.info(f"Queued start message on connect for scan: {scan_name}")
+                        print(f"Queued start message on connect for scan: {scan_name}")
+                    except queue.Full:
+                        logger.warning("Message queue full, dropping start message on connect")
             elif not server.client_connected and was_client_connected:
                 # Client just disconnected - send stop message
                 heartbeat.set_state(ServerState.READY)
@@ -587,6 +658,7 @@ def main(
 
                 # Send stop message when client disconnects (even without --exit-on-disconnect)
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    do_final_flush()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
                     stop_msg = TimePixStop(
                         scan_name=scan_name,
@@ -727,8 +799,12 @@ def main(
         print("\nShutting down server...")
 
     finally:
-        # Send stop message (only if we haven't already sent it on client disconnect)
-        if message_queue is not None and not stop_message_sent_on_disconnect:
+        # Send stop message only if a start was sent and stop hasn't been sent yet.
+        # Guarding on start_message_sent prevents an orphan stop from being published
+        # with the server's initial UUID when the client connection was never detected
+        # (e.g. connect+disconnect happened within one main-loop sleep cycle).
+        if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+            do_final_flush()
             acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
             stop_msg = TimePixStop(
                 scan_name=scan_name,
