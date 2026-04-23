@@ -627,7 +627,7 @@ def main(
                 # start_message_sent) as an immediate fallback for the first
                 # data batch if the main loop is mid-sleep when data arrives.
                 if message_queue is not None:
-                    acquisition_start_time = current_time
+                    acquisition_start_time = time.time()
                     start_msg = TimePixStart(
                         scan_name=scan_name,
                         tdc_frequency_hz=tdc_frequency,
