@@ -662,6 +662,19 @@ def main(
                 logger.info("Client disconnected, initiating shutdown...")
                 # Send stop message before shutdown
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    # Drain any TDC/pixel batches still sitting in
+                    # SocketDataServer.message_queue before snapshotting
+                    # cycle_count.  Without this, trailing TDCs that
+                    # arrived over TCP but haven't yet been routed
+                    # through data_callback are silently dropped from
+                    # stop.total_cycles (the dominant component of the
+                    # ~flush_interval-of-cycles "loss" observed in
+                    # short-disconnect experiments).
+                    if not server.wait_for_idle(timeout=5.0):
+                        logger.warning(
+                            "ingest queue did not drain within 5s; "
+                            "stop.total_cycles may understate the true cycle count"
+                        )
                     do_final_flush()
                     _wait_for_xyt_drain()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
@@ -751,6 +764,12 @@ def main(
 
                 # Send stop message when client disconnects (even without --exit-on-disconnect)
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    # See exit_on_disconnect branch above for the rationale.
+                    if not server.wait_for_idle(timeout=5.0):
+                        logger.warning(
+                            "ingest queue did not drain within 5s; "
+                            "stop.total_cycles may understate the true cycle count"
+                        )
                     do_final_flush()
                     _wait_for_xyt_drain()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
@@ -905,6 +924,11 @@ def main(
         # with the server's initial UUID when the client connection was never detected
         # (e.g. connect+disconnect happened within one main-loop sleep cycle).
         if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+            if not server.wait_for_idle(timeout=5.0):
+                logger.warning(
+                    "ingest queue did not drain within 5s; "
+                    "stop.total_cycles may understate the true cycle count"
+                )
             do_final_flush()
             _wait_for_xyt_drain()
             acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
