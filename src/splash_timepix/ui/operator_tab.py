@@ -693,6 +693,11 @@ class OperatorTab(QWidget):
 
         self._current_heatmap.view_changed.connect(self._average_heatmap.set_view)
         self._average_heatmap.view_changed.connect(self._current_heatmap.set_view)
+        # Zoom on either heatmap must refresh the spectrum/readout because
+        # cursor fractions are remapped through the current view.  Note that
+        # set_view does not re-emit view_changed, so we connect both signals.
+        self._current_heatmap.view_changed.connect(self._on_heatmap_view_changed)
+        self._average_heatmap.view_changed.connect(self._on_heatmap_view_changed)
         right_layout.addWidget(avg_col)
 
         # Wire ROI toggle buttons now that both heatmap and spectrum plot exist
@@ -785,6 +790,16 @@ class OperatorTab(QWidget):
         """Recompute spectra whenever a heatmap ROI cursor is moved."""
         self._update_spectra()
 
+    @Slot(int, int, int, int)
+    def _on_heatmap_view_changed(self, x0: int, x1: int, y0: int, y1: int) -> None:
+        """Refresh spectrum + readout when either heatmap zoom/view changes.
+
+        Cursor fractions are remapped through the current view, so the spectrum
+        data and the energy readout must be recomputed on every zoom.
+        """
+        self._update_spectra()
+        self._update_cursor_readout()
+
     @Slot(float, float)
     def _on_spectrum_cursors_changed(self, frac_a: float, frac_b: float) -> None:
         """Update pixel/eV readout whenever a spectrum vertical cursor is moved."""
@@ -807,16 +822,26 @@ class OperatorTab(QWidget):
         self._current_heatmap.update_cursor_overlay(fracs, active)
 
     def _update_cursor_readout(self) -> None:
-        """Refresh the pixel and eV position labels for the two vertical cursors."""
+        """Refresh the pixel and eV position labels for the two vertical cursors.
+
+        Spectrum cursor fractions span the heatmap's *visible* x-range, so we
+        must map them through the current view to get the true pixel index.
+        When unzoomed (x0=0, x1=n) this reduces to ``frac * (n - 1)``.
+        """
         n = self._n_energy
         if n is None or n < 2:
             for lbl in self._cursor_px_labels + self._cursor_ev_labels:
                 lbl.setText("--")
             return
 
+        x0, x1, _, _ = self._average_heatmap.get_view()
+        x0 = max(0, min(x0, n - 1))
+        x1 = max(x0 + 1, min(x1, n))
+        x_span_eff = max(0, x1 - x0 - 1)
+
         frac_a, frac_b = self._spectrum_plot.get_cursor_fracs()
-        x_a = frac_a * (n - 1)
-        x_b = frac_b * (n - 1)
+        x_a = x0 + frac_a * x_span_eff
+        x_b = x0 + frac_b * x_span_eff
 
         pixel_per_ev = self._pixel_per_ev.value()
         ev_at_mid = self._ev_at_mid.value()
@@ -850,21 +875,41 @@ class OperatorTab(QWidget):
         """Bin the average heatmap between each cursor pair and update the spectrum plot.
 
         Data shape is (n_energy, n_time).  The display shows ``flipud(data.T)``,
-        so the top of the display corresponds to the *last* time bin and the
-        bottom to time bin 0.  Cursor fraction 0.0 = display top = high time
-        bin index; 1.0 = display bottom = time bin 0.
+        so display-row indices map to time bins as ``time_bin = (n_t - 1) - row``.
+        Cursor fractions are widget-relative and span the *visible* portion of
+        the heatmap (the current view), not the full data — so we must apply the
+        view to map them correctly when zoomed.  We also slice the spectrum to
+        the visible x (energy) range so the bottom plot's x-axis matches the
+        heatmap's x-axis after a zoom.
         """
         data = self._last_avg_2d
         if data is None or data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
             return
-        n_t = data.shape[1]
+        n_e, n_t = data.shape
+
+        # Visible region in data-index coords; clamp defensively.
+        x0, x1, y0, y1 = self._average_heatmap.get_view()
+        x0 = max(0, min(x0, n_e - 1))
+        x1 = max(x0 + 1, min(x1, n_e))
+        y0 = max(0, min(y0, n_t - 1))
+        y1 = max(y0 + 1, min(y1, n_t))
+
+        # Map widget fraction f in [0, 1] → continuous display row → time bin.
+        # When unzoomed (y0=0, y1=n_t) this reduces to (1 - f) * (n_t - 1),
+        # matching the previous formula.  ``y_span_eff`` uses (y1 - y0 - 1) so
+        # f=0 lands on row y0 and f=1 lands on row (y1 - 1), the last visible row.
+        y_span_eff = max(0, y1 - y0 - 1)
+
+        def frac_to_time_bin(f: float) -> int:
+            row = y0 + f * y_span_eff
+            return int(round((n_t - 1) - row))
+
         for pair_idx, (frac_a, frac_b) in enumerate(self._average_heatmap.get_cursor_fracs()):
-            # Map display fractions to time-bin indices (display is flipped)
-            ta = int((1.0 - frac_a) * (n_t - 1))
-            tb = int((1.0 - frac_b) * (n_t - 1))
+            ta = max(0, min(n_t - 1, frac_to_time_bin(frac_a)))
+            tb = max(0, min(n_t - 1, frac_to_time_bin(frac_b)))
             t_lo, t_hi = min(ta, tb), max(ta, tb)
             n_bins = t_hi - t_lo + 1
-            spectrum = data[:, t_lo : t_hi + 1].sum(axis=1) / n_bins
+            spectrum = data[x0:x1, t_lo : t_hi + 1].sum(axis=1) / n_bins
             self._spectrum_plot.set_spectrum(pair_idx, spectrum)
 
     def _on_colormap_changed(self, name: str):
