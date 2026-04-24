@@ -311,6 +311,7 @@ def main(
             print("  'cps <value>' - Set counts per second")
             print("  'tdc <value>' - Set TDC frequency (Hz)")
             print("  'count <y/n>' - Count sent packets (default: y)")
+            print("  'batch <seconds>' - Wire-level burst batching; 0 disables (default: 0)")
             print("  'start <duration_in_seconds>' - Start auto-sending")
             print("  'stop' - Stop auto-sending")
             print("  'quit' - Exit")
@@ -345,6 +346,22 @@ def main(
                             continue
                         counting = True if command[1] == "y" else False
                         source.set_counting(counting)
+
+                    elif command[0] == "batch":
+                        if len(command) < 2:
+                            print("Usage: batch <seconds>  (0 disables; non-zero enables wire-level burst batching)")
+                            continue
+                        try:
+                            interval = float(command[1])
+                        except ValueError:
+                            print(f"Invalid batch interval: {command[1]!r} (expected a number of seconds)")
+                            continue
+                        try:
+                            source.set_tcp_batch_interval(interval)
+                            if interval == 0.0:
+                                print("TCP batching disabled (per-packet sendall)")
+                        except ValueError as e:
+                            print(f"Invalid batch interval: {e}")
 
                     elif command[0] == "start":
                         if len(command) < 2:
