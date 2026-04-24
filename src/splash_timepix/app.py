@@ -171,13 +171,13 @@ def main(
 
     heartbeat.set_queue_stats_provider(_queue_stats_for_heartbeat)
 
-    # Generate unique scan name
-    # Generate initial scan_name (will be regenerated for each new client connection)
+    # UUID for the current acquisition.
     # Full UUID4 (36 chars) so it matches the _uuid.txt written by the UI at save time.
+    # Single source of truth: generated exclusively in the client-connect block below.
     def generate_scan_name():
         return str(uuid.uuid4())
 
-    scan_name = generate_scan_name()
+    scan_name: str | None = None  # set by client-connect block; None until first connect
 
     # Define x, y, t accumulator array
     config = SimulatorConfig()
@@ -254,11 +254,11 @@ def main(
     process = psutil.Process(os.getpid())
     print(f"Monitoring Python server process (PID: {os.getpid()})")
 
-    # Set up a callback to handle new data
+    # Per-acquisition state variables.
+    # These declarations satisfy Python's nonlocal scoping requirements for the nested
+    # functions (data_callback, handle_tdc, bin_pixels, do_final_flush).
+    # Authoritative reset on every client connect: see the "client_connected" branch below.
     event_count = 0
-
-    # Time-resolved binning callback
-    # State variables
     t_zero = None
     cycle_count = 0
     flush_count = 0
@@ -266,8 +266,8 @@ def main(
     pixels_outside_window = 0
     last_tdc_warning_time = None
     first_pixel_time = None
-    start_message_sent = False  # Track if start message has been sent
-    acquisition_start_time = None  # Track when acquisition actually started
+    start_message_sent = False
+    acquisition_start_time = None
 
     # Convert edge string to enum value
     target_edge = 0 if tdc_edge.lower() == "rising" else 1
@@ -295,8 +295,10 @@ def main(
 
         current_time = time.time()
 
-        # Send start message when first data arrives
-        if not start_message_sent and message_queue is not None:
+        # Send start message when first data arrives.
+        # Guard on scan_name: the main loop generates it on client-connect; if it hasn't
+        # fired yet (main loop mid-sleep) we skip here and let the main-loop start take over.
+        if not start_message_sent and message_queue is not None and scan_name is not None:
             acquisition_start_time = current_time
             start_msg = TimePixStart(
                 scan_name=scan_name,
@@ -486,6 +488,20 @@ def main(
                 mask = pixel_indices > last_boundary
                 bin_pixels(mask)
 
+    def _wait_for_xyt_drain(timeout: float = 30.0) -> None:
+        """Block until xyt_queue is empty or timeout expires.
+
+        Must be called before putting a stop message into message_queue so that
+        all buffered event messages are published by the ZMQ worker before the
+        stop control message.  The ZMQ worker checks message_queue with higher
+        priority, so without this wait the stop would jump ahead of queued flushes.
+        """
+        deadline = time.time() + timeout
+        while not xyt_queue.empty() and time.time() < deadline:
+            time.sleep(0.05)
+        if not xyt_queue.empty():
+            logger.warning(f"xyt_queue not drained after {timeout}s; stop message may arrive before remaining flushes")
+
     def do_final_flush() -> None:
         """Flush any data remaining in the accumulator before sending a stop message.
 
@@ -575,6 +591,7 @@ def main(
                 # Send stop message before shutdown
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
                     do_final_flush()
+                    _wait_for_xyt_drain()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
                     stop_msg = TimePixStop(
                         scan_name=scan_name,
@@ -590,7 +607,6 @@ def main(
                         logger.info(f"Queued stop message (client disconnect) for scan: {scan_name}")
                         print(f"Queued stop message (client disconnect) for scan: {scan_name}")
                         stop_message_sent_on_disconnect = True
-                        time.sleep(0.5)  # Give worker time to send
                     except queue.Full:
                         logger.warning("Message queue full, dropping stop message")
                 break
@@ -599,13 +615,13 @@ def main(
             if server.client_connected and not was_client_connected:
                 heartbeat.set_state(ServerState.STREAMING)
                 was_client_connected = True
-                # Reset stop message flag when new client connects
+                # ── Authoritative per-acquisition reset ──────────────────────
+                # scan_name is generated here and nowhere else (single source of truth).
+                # All counters declared above are also reset here for each new client.
                 stop_message_sent_on_disconnect = False
-                # Reset acquisition state for new client connection (new acquisition)
                 start_message_sent = False
                 acquisition_start_time = None
                 scan_name = generate_scan_name()
-                # Reset counters for new acquisition
                 cycle_count = 0
                 flush_count = 0
                 event_count = 0
@@ -659,6 +675,7 @@ def main(
                 # Send stop message when client disconnects (even without --exit-on-disconnect)
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
                     do_final_flush()
+                    _wait_for_xyt_drain()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
                     stop_msg = TimePixStop(
                         scan_name=scan_name,
@@ -674,7 +691,6 @@ def main(
                         logger.info(f"Queued stop message (client disconnected) for scan: {scan_name}")
                         print(f"Queued stop message (client disconnected) for scan: {scan_name}")
                         stop_message_sent_on_disconnect = True
-                        time.sleep(0.5)  # Give worker time to send
                     except queue.Full:
                         logger.warning("Message queue full, dropping stop message")
 
@@ -805,6 +821,7 @@ def main(
         # (e.g. connect+disconnect happened within one main-loop sleep cycle).
         if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
             do_final_flush()
+            _wait_for_xyt_drain()
             acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
             stop_msg = TimePixStop(
                 scan_name=scan_name,
@@ -818,9 +835,7 @@ def main(
             try:
                 message_queue.put_nowait(stop_msg.model_dump())
                 logger.info(f"Queued stop message for scan: {scan_name}")
-                print(f"Queued stop message for scan: {scan_name}")  # Also print to console
-                # Give worker time to send the stop message
-                time.sleep(0.5)  # Increased wait time
+                print(f"Queued stop message for scan: {scan_name}")
             except queue.Full:
                 logger.warning("Message queue full, dropping stop message")
                 print("WARNING: Message queue full, dropping stop message")

@@ -25,7 +25,6 @@ from splash_timepix.schemas import TimePixEvent, TimePixStart, TimePixStop
 from splash_timepix.simulator_cli import SimulatorSource
 from tests.port_utils import get_free_port
 
-
 # ---------------------------------------------------------------------------
 # Shared helper
 # ---------------------------------------------------------------------------
@@ -294,13 +293,21 @@ def test_simulator_stop_sends_zmq_stop_and_second_run_resets_counters():
     hb_port = get_free_port()
 
     server_cmd = [
-        sys.executable, "-m", "splash_timepix.app",
-        "--host", "localhost",
-        "--port", str(tcp_port),
-        "--zmq-port", str(zmq_port),
-        "--heartbeat-port", str(hb_port),
-        "--tdc-frequency", "20",
-        "--flush-interval", "0.5",
+        sys.executable,
+        "-m",
+        "splash_timepix.app",
+        "--host",
+        "localhost",
+        "--port",
+        str(tcp_port),
+        "--zmq-port",
+        str(zmq_port),
+        "--heartbeat-port",
+        str(hb_port),
+        "--tdc-frequency",
+        "20",
+        "--flush-interval",
+        "0.5",
     ]
     server_proc = subprocess.Popen(
         server_cmd,
@@ -358,15 +365,14 @@ def test_simulator_stop_sends_zmq_stop_and_second_run_resets_counters():
 
         scan2 = next(m["scan_name"] for m in run2 if m.get("msg_type") == "start")
         assert scan2 != scan1, (
-            "Bug #11/2: scan_name not reset between runs — "
-            "server did not see a new client connection"
+            "Bug #11/2: scan_name not reset between runs — " "server did not see a new client connection"
         )
 
         events2 = [m for m in run2 if m.get("msg_type") not in ("start", "stop")]
         if events2:
-            assert events2[0].get("flush_number") == 1, (
-                f"Bug #11/2: flush_number should restart at 1, got {events2[0].get('flush_number')}"
-            )
+            assert (
+                events2[0].get("flush_number") == 1
+            ), f"Bug #11/2: flush_number should restart at 1, got {events2[0].get('flush_number')}"
 
     finally:
         server_proc.terminate()
@@ -395,13 +401,21 @@ def test_final_flush_sent_before_stop():
     hb_port = get_free_port()
 
     server_cmd = [
-        sys.executable, "-m", "splash_timepix.app",
-        "--host", "localhost",
-        "--port", str(tcp_port),
-        "--zmq-port", str(zmq_port),
-        "--heartbeat-port", str(hb_port),
-        "--tdc-frequency", "20",
-        "--flush-interval", "1.0",
+        sys.executable,
+        "-m",
+        "splash_timepix.app",
+        "--host",
+        "localhost",
+        "--port",
+        str(tcp_port),
+        "--zmq-port",
+        str(zmq_port),
+        "--heartbeat-port",
+        str(hb_port),
+        "--tdc-frequency",
+        "20",
+        "--flush-interval",
+        "1.0",
         "--exit-on-disconnect",
     ]
     server_proc = subprocess.Popen(
@@ -442,15 +456,13 @@ def test_final_flush_sent_before_stop():
 
         events = [m for m in messages if m.get("msg_type") not in ("start", "stop")]
         assert len(events) >= 1, (
-            "Bug #11/3: no event messages received — final flush was not sent. "
-            f"All message types: {types}"
+            "Bug #11/3: no event messages received — final flush was not sent. " f"All message types: {types}"
         )
 
         # total_flushes in the stop must account for the final flush
         stop_meta = next(m for m in messages if m.get("msg_type") == "stop")
         assert stop_meta["total_flushes"] == len(events), (
-            f"stop.total_flushes={stop_meta['total_flushes']} != "
-            f"events received={len(events)}"
+            f"stop.total_flushes={stop_meta['total_flushes']} != " f"events received={len(events)}"
         )
 
     finally:

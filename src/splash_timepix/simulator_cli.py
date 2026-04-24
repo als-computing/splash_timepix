@@ -98,9 +98,11 @@ class SimulatorSource:
             print("Auto-sending is already running")
             return
 
-        # Reconnect if a previous stop disconnected the socket
+        # Connect (or reconnect after a previous DAQ) when the DAQ starts so
+        # the server only sees a new client — and publishes the ZMQ start
+        # message — at this point, not when the CLI was launched.
         if self.socket is None:
-            print("Reconnecting to server for new acquisition...")
+            print("Connecting to server for new acquisition...")
             if not self.connect():
                 return
 
@@ -184,6 +186,11 @@ class SimulatorSource:
         dt = datetime.datetime.fromtimestamp(time.time())
         formatted = dt.strftime("%Y-%m-%d %H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
         print(f"Current time: {formatted}")
+        # Disconnect so the server sees the TCP close and publishes the ZMQ stop
+        # message.  When the user typed "stop" this is handled by stop_auto_sending();
+        # when the timer expires naturally, we must do it here.  disconnect() is
+        # idempotent (checks self.socket), so a double-call is harmless.
+        self.disconnect()
 
 
 @app.command()
@@ -223,8 +230,9 @@ def main(
     source.set_tdc_frequency(tdc_frequency)
     source.set_counting(not no_count)
 
-    if not source.connect():
-        return
+    # Do NOT connect here.  Connection is deferred to start_auto_sending() so
+    # that the server only sees a new TCP client — and therefore only publishes
+    # the ZMQ start message — when a DAQ actually begins, not at CLI startup.
 
     try:
         if auto_start:
