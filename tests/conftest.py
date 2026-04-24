@@ -148,8 +148,17 @@ class StreamingRig:
         cps: Optional[float] = None,
         tdc_frequency: Optional[float] = None,
         counting: bool = False,
+        tcp_batch_interval_s: float = 0.0,
     ) -> subprocess.Popen:
-        """Spawn ``splash_timepix.simulator_cli --auto-start`` against this rig."""
+        """Spawn ``splash_timepix.simulator_cli --auto-start`` against this rig.
+
+        ``tcp_batch_interval_s`` controls wire-level bolus batching in the
+        simulator: 0 (default) sends each packet immediately (the real-
+        hardware profile the existing suite was designed around), >0
+        buffers bytes for that many seconds then emits as one sendall
+        (reproduces the Serval+luna-iterator regime for the bursty-wire
+        regression test).
+        """
         cmd = [
             sys.executable,
             "-m",
@@ -168,6 +177,8 @@ class StreamingRig:
         ]
         if not counting:
             cmd.append("--no-count")
+        if tcp_batch_interval_s > 0:
+            cmd += ["--tcp-batch-interval", str(tcp_batch_interval_s)]
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
