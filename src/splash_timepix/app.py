@@ -268,6 +268,18 @@ def main(
     first_pixel_time = None
     start_message_sent = False
     acquisition_start_time = None
+    # Wall-clock flush gate state.
+    #   last_flush_time: time.monotonic() of the most recent emit, or None
+    #     before the first TDC of the acquisition has armed the clock.  Using
+    #     monotonic (not wall) makes the gate NTP/DST-proof; the wire-level
+    #     flush_metadata "timestamp" published by zmq_worker still uses
+    #     time.time() so subscribers see no change in format.
+    #   cycles_since_last_flush: number of *closed* TDC cycles currently
+    #     accumulated in local_accumulator.  Exactly what the old gate's
+    #     "flush_every_n_cycles" constant used to carry, except now driven
+    #     by wall-clock boundaries rather than a modulus on cycle_count.
+    last_flush_time = None
+    cycles_since_last_flush = 0
 
     # Convert edge string to enum value
     target_edge = 0 if tdc_edge.lower() == "rising" else 1
@@ -424,41 +436,30 @@ def main(
 
         # Helper function to handle TDC trigger (flush check + update t_zero)
         def handle_tdc(tdc_ts):
-            """Process a TDC trigger: check for flush, update t_zero."""
-            nonlocal t_zero, cycle_count, flush_count
-            nonlocal pixels_before_trigger, pixels_outside_window
-            nonlocal last_tdc_warning_time
-            nonlocal xyt_array
+            """Process a TDC trigger: wall-clock-gated flush, then update t_zero.
 
-            # Check if we need to flush
-            if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
-                with xyt_lock:
-                    xyt_array += local_accumulator
-                    array_copy = xyt_array.copy()
-                    xyt_array.fill(0)
+            A TDC closes the *previous* cycle.  We therefore increment the
+            closed-cycle counter only when ``t_zero is not None``, i.e. only
+            when there was a previous cycle to close.  Flush emission is
+            delegated to ``emit_flush_if_due()`` which does the gate check,
+            the accumulator copy, and the state reset all under
+            ``xyt_lock`` to avoid a TOCTOU race with the main-loop watchdog.
+            """
+            nonlocal t_zero, cycle_count, last_tdc_warning_time
+            nonlocal last_flush_time, cycles_since_last_flush
 
-                local_accumulator.fill(0)
-                flush_count += 1
+            if t_zero is not None:
+                cycles_since_last_flush += 1
+                cycle_count += 1
 
-                flush_metadata = {
-                    "scan_name": scan_name,
-                    "cycles_in_flush": flush_every_n_cycles,
-                    "total_cycles": cycle_count,
-                    "flush_number": flush_count,
-                    "pixels_discarded_before_trigger": int(pixels_before_trigger),
-                    "pixels_discarded_outside_window": int(pixels_outside_window),
-                }
-
-                try:
-                    xyt_queue.put_nowait((array_copy, flush_metadata))
-                    logger.info(f"Flushed: #{flush_count}, cycles={flush_every_n_cycles}")
-                    pixels_before_trigger = 0
-                    pixels_outside_window = 0
-                except queue.Full:
-                    logger.warning("Processing queue full, dropping array")
+            # Arm the wall-clock gate on the first TDC of the acquisition
+            # (or after reconnect); afterwards let the gate decide.
+            if last_flush_time is None:
+                last_flush_time = time.monotonic()
+            else:
+                emit_flush_if_due()
 
             t_zero = int(tdc_ts)
-            cycle_count += 1
             last_tdc_warning_time = current_time
 
         # =====================================================================
@@ -487,6 +488,70 @@ def main(
             if result.n_pixels > 0:
                 mask = pixel_indices > last_boundary
                 bin_pixels(mask)
+
+    def emit_flush_if_due() -> bool:
+        """Publish one flush event if the wall-clock gate is open.
+
+        Called from two producers: ``handle_tdc`` on the TCP callback
+        thread, and the main loop's silence watchdog.  Both entry points
+        funnel through here so the gate check, the accumulator copy,
+        and the state reset all happen atomically under ``xyt_lock``.
+        That atomicity is what makes the check-and-reset race-free: a
+        second caller sees ``cycles_since_last_flush == 0`` and bails
+        without double-emitting.
+
+        Returns True iff an event was actually put on ``xyt_queue``.
+        """
+        nonlocal last_flush_time, cycles_since_last_flush
+        nonlocal flush_count, pixels_before_trigger, pixels_outside_window
+        nonlocal xyt_array
+
+        with xyt_lock:
+            # Gate: nothing to do if no TDC has armed the clock yet,
+            # if the accumulator is empty, or if the flush interval
+            # has not elapsed since the last emit.
+            if last_flush_time is None:
+                return False
+            if cycles_since_last_flush == 0:
+                return False
+            if (time.monotonic() - last_flush_time) < flush_interval:
+                return False
+
+            xyt_array += local_accumulator
+            array_copy = xyt_array.copy()
+            xyt_array.fill(0)
+            local_accumulator.fill(0)
+
+            flush_count += 1
+            cycles_in_flush = cycles_since_last_flush
+            total_cycles_snapshot = cycle_count
+            flush_number = flush_count
+            pbt = int(pixels_before_trigger)
+            pow_ = int(pixels_outside_window)
+
+            last_flush_time = time.monotonic()
+            cycles_since_last_flush = 0
+            pixels_before_trigger = 0
+            pixels_outside_window = 0
+
+        # Build metadata and put on the queue OUTSIDE the lock.  Queue
+        # has its own internal lock and we want the critical section
+        # above to stay as short as possible.
+        flush_metadata = {
+            "scan_name": scan_name,
+            "cycles_in_flush": cycles_in_flush,
+            "total_cycles": total_cycles_snapshot,
+            "flush_number": flush_number,
+            "pixels_discarded_before_trigger": pbt,
+            "pixels_discarded_outside_window": pow_,
+        }
+        try:
+            xyt_queue.put_nowait((array_copy, flush_metadata))
+            logger.info(f"Flushed: #{flush_number}, cycles={cycles_in_flush}")
+            return True
+        except queue.Full:
+            logger.warning("Processing queue full, dropping array")
+            return False
 
     def _wait_for_xyt_drain(timeout: float = 30.0) -> None:
         """Block until xyt_queue is empty or timeout expires.
@@ -525,7 +590,14 @@ def main(
             return
 
         flush_count += 1
-        partial_cycles = cycle_count % flush_every_n_cycles if flush_every_n_cycles > 0 else cycle_count
+        # Accurate residual cycle count: cycles_since_last_flush is
+        # decremented to 0 after each emit_flush_if_due, so what's left
+        # here is exactly the number of closed cycles still sitting in
+        # local_accumulator.  Replaces the pre-fix
+        # `cycle_count % flush_every_n_cycles` heuristic, which was
+        # off-by-one (a TDC arms the next cycle without it being
+        # closed yet).
+        partial_cycles = cycles_since_last_flush
         flush_metadata = {
             "scan_name": scan_name,
             "cycles_in_flush": partial_cycles,
@@ -629,6 +701,11 @@ def main(
                 pixels_outside_window = 0
                 t_zero = None
                 first_pixel_time = None
+                # Wall-clock gate: clear so the first TDC of the new
+                # acquisition re-arms the clock (instead of carrying
+                # over a stale t_last from the previous client).
+                last_flush_time = None
+                cycles_since_last_flush = 0
                 # Clear arrays for fresh start
                 with xyt_lock:
                     xyt_array.fill(0)
@@ -696,6 +773,14 @@ def main(
 
             time.sleep(1)
             current_time = time.time()
+
+            # Silence watchdog: if the upstream goes quiet (no TDCs
+            # arriving on the receive thread), handle_tdc cannot push
+            # the gate.  Tick it from the main loop too so the last
+            # buffered cycle is released within ~flush_interval + 1 s
+            # even when the wire is idle.  Safe to call concurrently
+            # with handle_tdc: emit_flush_if_due is internally locked.
+            emit_flush_if_due()
 
             # Show/ update overall stats
             if current_time - last_stats_time >= stats_update_time:
