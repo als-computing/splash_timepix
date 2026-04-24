@@ -125,6 +125,14 @@ class SimulatorConfig:
     detector_size_y: int = 256  # Detector height
     include_control_packets: bool = False  # Whether to generate control packets
     control_packet_interval: float = 1.0  # Seconds between control sequences
+    # Wire-level batching: when > 0, the CLI's TCP send loop accumulates
+    # packets in-memory for this many seconds, then sendalls them in one
+    # bundle.  Default 0 preserves the original one-packet-per-sendall
+    # behaviour (and therefore does not change any production workload).
+    # This knob exists to reproduce the Serval+luna-iterator symptom in
+    # integration tests without a real detector: it injects multi-second
+    # sorted boluses on the wire the way the upstream sorter does.
+    tcp_batch_interval_s: float = 0.0
 
 
 class PacketSimulator:
