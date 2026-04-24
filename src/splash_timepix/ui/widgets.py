@@ -354,6 +354,11 @@ class _HeatmapCanvas(QWidget):
         self._render()
         self.view_changed.emit(*self._view)
 
+    def get_view(self) -> tuple[int, int, int, int]:
+        """Current data-index view as (x0, x1, y0, y1)."""
+        x0, x1, y0, y1 = self._view
+        return (int(x0), int(x1), int(y0), int(y1))
+
     def set_cursor_time_scale(self, scale: float, offset: float = 0.0) -> None:
         self._cursor_time_scale = scale
         self._cursor_time_offset = offset
@@ -506,19 +511,17 @@ class _HeatmapCanvas(QWidget):
                     y = self._frac_to_y(frac, rect)
                     painter.drawLine(rect.left(), y, rect.right(), y)
 
-        # Vertical cursor overlay from spectrum plot (read-only, not draggable)
+        # Vertical cursor overlay from spectrum plot (read-only, not draggable).
+        # The spectrum widget x-axis spans the heatmap's *visible* x-range, so a
+        # spectrum cursor at widget fraction f maps to the same widget fraction of
+        # the heatmap canvas — no zoom math needed here.
         if self._vcursor_fracs and self._vcursors_on_heatmap and self._data_full is not None and self._pixmap_ui:
-            x0, x1, _y0, _y1 = self._view
-            n_cols = self._data_full.shape[1]
-            x_span = max(1, x1 - x0)
             rect = self.rect()
             vc_pen = QPen(QColor("#D0D0D0"), 1.0, Qt.PenStyle.SolidLine)
             painter.setPen(vc_pen)
             for frac in self._vcursor_fracs:
-                data_x = frac * n_cols
-                if x0 <= data_x <= x1:
-                    screen_x = int((data_x - x0) / x_span * rect.width())
-                    painter.drawLine(screen_x, rect.top(), screen_x, rect.bottom())
+                screen_x = int(frac * rect.width())
+                painter.drawLine(screen_x, rect.top(), screen_x, rect.bottom())
 
         # Zoom rubber-band overlay
         if self._zooming and self._zoom_start and self._zoom_end:
@@ -809,6 +812,10 @@ class HeatmapWidget(QWidget):
 
     def reset_view(self) -> None:
         self._canvas.reset_view()
+
+    def get_view(self) -> tuple[int, int, int, int]:
+        """Current data-index view as (x0, x1, y0, y1)."""
+        return self._canvas.get_view()
 
     def set_zoom_mode(self, mode: str) -> None:
         self._canvas.set_zoom_mode(mode)
