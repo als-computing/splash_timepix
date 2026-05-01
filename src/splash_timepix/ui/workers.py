@@ -393,10 +393,15 @@ class ProcessManager(QObject):
             logger.error(f"live-cli not found: {live_cli}")
             return False
 
-        # parameters default
-        args = []
-        # parameters recommended by Henrique 2025-12-15
-        # args = ["--bin-width-exp", 0, "--max-delay-bins", 12]
+        # parameters recommended by Henrique 2025-12-15.  Default would be []
+        # (i.e. live-cli's own defaults, --bin-width-exp 2 --max-delay-bins 3).
+        # NOTE 2026-05-01: enabling these to test whether they affect the
+        # ~45 s upstream-bolus pattern we see in /tmp/flush_pacing_*.json.
+        # Math suggests they shouldn't (default and these both give ~5 ms
+        # of total sort-buffer latency — same depth, just different bin
+        # granularity), but enabling them removes one variable.  Revert by
+        # setting `args = []` below.
+        args = ["--bin-width-exp", "0", "--max-delay-bins", "12"]
 
         if replay_file:
             args = ["--source-files", replay_file]
