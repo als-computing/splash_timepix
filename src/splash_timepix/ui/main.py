@@ -11,6 +11,7 @@ from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import QTimer, Slot
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
 from splash_timepix.serval_client import ServalClient
@@ -724,12 +725,47 @@ def _show_retry_dialog() -> None:
     msg.exec()
 
 
+def _load_app_icon() -> QIcon:
+    """Return the bundled window/taskbar icon, or an empty QIcon if missing.
+
+    The asset lives next to this module so editable installs and built wheels
+    (via the ``[tool.setuptools.package-data]`` glob in ``pyproject.toml``)
+    resolve the same path. A missing file is a soft failure — log and fall back
+    to Qt's default rather than block UI startup.
+    """
+    icon_path = Path(__file__).resolve().parent / "assets" / "icon.png"
+    if not icon_path.is_file():
+        logger.warning("App icon not found at %s; falling back to Qt default", icon_path)
+        return QIcon()
+    return QIcon(str(icon_path))
+
+
 def main():
     """Application entry point."""
     autostart_serval = "--autostart-serval" in sys.argv
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    # Wayland compositors (GNOME, KDE Plasma) use the desktop-file name as the
+    # window's app_id for grouping in the taskbar / dock and for matching
+    # against an installed `splash_timepix.desktop`. Without it the window
+    # often shows up as a generic "Wayland Application". Harmless on X11.
+    app.setDesktopFileName("splash_timepix")
+    # Without this, X11 derives WM_CLASS from argv[0] — which becomes
+    # ".../main.py" under `python -m splash_timepix.ui.main`. Panels read
+    # WM_CLASS for taskbar grouping and the entry's "application name"
+    # tooltip, so the launcher would show "main.py" instead of our app.
+    # On Wayland this is also used as a fallback for app_id when
+    # setDesktopFileName is unset (it's not, but keeping both is cheap).
+    app.setApplicationName("splash_timepix")
+    # Human-readable label. Qt appends this to top-level window titles when
+    # the title does not already include it, which is what most Linux
+    # taskbars / Alt-Tab switchers display as the entry's tooltip.
+    app.setApplicationDisplayName("Splash TimePix")
+    # setWindowIcon on the QApplication propagates to every top-level widget
+    # constructed afterward, so MainWindow inherits it without an explicit
+    # call. Must run *before* MainWindow is built.
+    app.setWindowIcon(_load_app_icon())
 
     # Route SIGTERM through Qt's event loop so MainWindow.closeEvent runs and
     # ProcessManager.stop_all() takes the children with us. Without this the
