@@ -35,9 +35,10 @@ def _full_prefs_payload() -> dict:
         "output_dir": "/tmp/splash_timepix_test_output",
         "alignment_rate_hz": 15,
         "alignment_auto_range": False,
-        "alignment_manual_min": 5,
-        "alignment_manual_max": 250,
+        "alignment_manual_min": 5.0,
+        "alignment_manual_max": 250.0,
         "alignment_log": True,
+        "alignment_binarize": False,
         "alignment_show_integrated": True,
         "alignment_show_crosshair": False,
     }

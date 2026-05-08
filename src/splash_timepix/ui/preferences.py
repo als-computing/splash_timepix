@@ -66,9 +66,17 @@ def default_preferences() -> Dict[str, Any]:
         # 30 Hz update, latest-only display, linear (non-log) intensity.
         "alignment_rate_hz": 30,
         "alignment_auto_range": True,
-        "alignment_manual_min": 0,
-        "alignment_manual_max": 100,
+        # manual_min/max are floats so they can express log-space levels too
+        # (typical max ~5 in log10 space). They're only consulted in Manual
+        # range mode; toggling Log forces Auto so the image stays visible.
+        "alignment_manual_min": 0.0,
+        "alignment_manual_max": 100.0,
         "alignment_log": False,
+        # Binarize defaults ON: collapses any pixel > 0 to the brightest LUT
+        # color so even single hits are unambiguously visible. Operators
+        # routinely have very low count rates during initial alignment, where
+        # the linear LUT renders nearly all pixels as near-black.
+        "alignment_binarize": True,
         "alignment_show_integrated": False,
         "alignment_show_crosshair": True,
     }
@@ -216,22 +224,29 @@ def validate_and_clamp(raw: Any) -> Dict[str, Any]:
         fallback=defaults["alignment_auto_range"],
         name="alignment_auto_range",
     )
-    out["alignment_manual_min"] = _clamp_int(
+    out["alignment_manual_min"] = _clamp_float(
         raw.get("alignment_manual_min", defaults["alignment_manual_min"]),
-        *ALIGNMENT_LEVEL_RANGE,
-        fallback=defaults["alignment_manual_min"],
+        float(ALIGNMENT_LEVEL_RANGE[0]),
+        float(ALIGNMENT_LEVEL_RANGE[1]),
+        fallback=float(defaults["alignment_manual_min"]),
         name="alignment_manual_min",
     )
-    out["alignment_manual_max"] = _clamp_int(
+    out["alignment_manual_max"] = _clamp_float(
         raw.get("alignment_manual_max", defaults["alignment_manual_max"]),
-        *ALIGNMENT_LEVEL_RANGE,
-        fallback=defaults["alignment_manual_max"],
+        float(ALIGNMENT_LEVEL_RANGE[0]),
+        float(ALIGNMENT_LEVEL_RANGE[1]),
+        fallback=float(defaults["alignment_manual_max"]),
         name="alignment_manual_max",
     )
     out["alignment_log"] = _validate_bool(
         raw.get("alignment_log", defaults["alignment_log"]),
         fallback=defaults["alignment_log"],
         name="alignment_log",
+    )
+    out["alignment_binarize"] = _validate_bool(
+        raw.get("alignment_binarize", defaults["alignment_binarize"]),
+        fallback=defaults["alignment_binarize"],
+        name="alignment_binarize",
     )
     out["alignment_show_integrated"] = _validate_bool(
         raw.get("alignment_show_integrated", defaults["alignment_show_integrated"]),
