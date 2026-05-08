@@ -40,7 +40,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("TimePix3 Acquisition")
-        self.setMinimumSize(1400, 1040)
+        self.setMinimumSize(1333, 1000)
 
         # State
         self._acquiring = False
