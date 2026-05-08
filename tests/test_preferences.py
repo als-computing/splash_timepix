@@ -18,7 +18,12 @@ from splash_timepix.ui import preferences
 
 
 def _full_prefs_payload() -> dict:
-    """A complete, in-range preferences dict that round-trips identically."""
+    """A complete, in-range preferences dict that round-trips identically.
+
+    Must include every key that ``validate_and_clamp`` emits (operator subset
+    *and* alignment subset); otherwise round-trip equality fails because the
+    sanitized on-disk file fills missing keys with their defaults.
+    """
     return {
         "preferences_version": preferences.PREFERENCES_VERSION,
         "tdc_frequency": 2500.5,
@@ -28,6 +33,13 @@ def _full_prefs_payload() -> dict:
         "n_bins": 12_000,
         "duration": 120,
         "output_dir": "/tmp/splash_timepix_test_output",
+        "alignment_rate_hz": 15,
+        "alignment_auto_range": False,
+        "alignment_manual_min": 5,
+        "alignment_manual_max": 250,
+        "alignment_log": True,
+        "alignment_show_integrated": True,
+        "alignment_show_crosshair": False,
     }
 
 
