@@ -23,6 +23,41 @@ source .venv/bin/activate
 pip install -e .[dev]
 ```
 
+To use the PySide6 acquisition UI, also install the optional `ui` extra:
+```bash
+pip install -e ".[ui]"
+```
+
+### Optional: register the UI with GNOME
+
+On a fresh Linux/GNOME machine the UI launches fine via `tpx-ui`, but the
+window will appear in the dock with a generic gear icon and a `main.py`
+tooltip until the desktop integration is installed. The repository ships a
+script that creates the icon, an installed `.desktop` launcher, and a
+clickable shortcut on the Desktop, all derived from the current clone path:
+
+```bash
+./scripts/install_desktop_integration.sh
+```
+
+Re-running is safe (every output is overwritten). To remove:
+
+```bash
+./scripts/install_desktop_integration.sh --uninstall
+```
+
+What it sets up:
+
+| Path | Purpose |
+|------|---------|
+| `~/.local/share/icons/hicolor/256x256/apps/splash_timepix.png` | Themed icon for the dock and Activities. |
+| `~/.local/share/applications/splash_timepix.desktop` | Launcher GNOME indexes; `StartupWMClass=splash_timepix` pairs the running window to this entry. |
+| `~/Desktop/splash_timepix.desktop` | Clickable shortcut on the user's Desktop. |
+
+After running it once, log out and back in (or restart the dock extension)
+so GNOME picks up the new launcher. On Wayland-GNOME the dock will then
+show the bundled icon instead of the gear.
+
 ### Dependencies
 
 - `numpy` - Array operations
