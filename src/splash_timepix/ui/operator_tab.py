@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal, Slot
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import theme
+from . import preferences, theme
 from .widgets import CURSOR_COLORS, HeatmapWidget, SpectrumPlotWidget, StatusIndicator, VerticalLabel, get_colormap
 from .workers import FlushData, HeartbeatStatus, ServalStatus
 
@@ -83,6 +83,10 @@ class OperatorTab(QWidget):
         self._n_energy: Optional[int] = None  # number of energy pixels in current data
 
         self._setup_ui()
+        try:
+            self.load_operator_preferences()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Failed to load operator preferences; using widget defaults")
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -764,6 +768,51 @@ class OperatorTab(QWidget):
             "duration": self._duration_input.value(),
             "output_dir": self._output_input.text(),
         }
+
+    def _build_preferences(self) -> dict:
+        """Snapshot the operator-sidebar widget state for persistence.
+
+        Stores the **displayed** combo text (not the converted forms used
+        by ``_get_params``) so restoration via ``QComboBox.setCurrentText``
+        round-trips exactly. See ``preferences.py`` for the full schema.
+        """
+        return {
+            "tdc_frequency": float(self._tdc_freq_input.value()),
+            "tdc_channel_text": self._tdc_ch_combo.currentText(),
+            "tdc_edge_text": self._tdc_edge_combo.currentText(),
+            "callback_batch_size": int(self._callback_batch_input.value()),
+            "n_bins": int(self._n_bins_input.value()),
+            "duration": int(self._duration_input.value()),
+            "output_dir": self._output_input.text(),
+        }
+
+    def load_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
+        """Restore acquisition-sidebar widgets from on-disk preferences.
+
+        Always succeeds: a missing or malformed file falls back to the
+        widget defaults (already set by ``_setup_ui``). Out-of-range
+        values are clamped before being applied. The output path tooltip
+        is refreshed to reflect the loaded path.
+        """
+        prefs = preferences.load_operator_preferences(path)
+        self._tdc_freq_input.setValue(float(prefs["tdc_frequency"]))
+        self._tdc_ch_combo.setCurrentText(prefs["tdc_channel_text"])
+        self._tdc_edge_combo.setCurrentText(prefs["tdc_edge_text"])
+        self._callback_batch_input.setValue(int(prefs["callback_batch_size"]))
+        self._n_bins_input.setValue(int(prefs["n_bins"]))
+        self._duration_input.setValue(int(prefs["duration"]))
+        self._output_input.setText(str(prefs["output_dir"]))
+        self._sync_output_path_tooltip()
+
+    def save_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
+        """Persist current sidebar widget state to disk (atomic write).
+
+        Idempotent and side-effect-free aside from the JSON write. The
+        caller is responsible for swallowing exceptions if the goal is
+        to never block quit; this method itself raises on I/O failure
+        so test code can assert behavior.
+        """
+        preferences.save_operator_preferences(self._build_preferences(), path)
 
     def _on_mode_clicked(self, mode: str):
         params = self._get_params()

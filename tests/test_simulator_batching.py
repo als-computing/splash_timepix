@@ -94,10 +94,9 @@ def test_tcp_batch_interval_zero_is_per_packet():
     # Every packet is 12 bytes; in per-packet mode every sendall carries
     # exactly one packet.
     sizes = [n for _, n in fake.sendalls]
-    assert all(s == 12 for s in sizes), (
-        f"tcp_batch_interval_s=0 should send 12 bytes per sendall, "
-        f"got sizes {sorted(set(sizes))}"
-    )
+    assert all(
+        s == 12 for s in sizes
+    ), f"tcp_batch_interval_s=0 should send 12 bytes per sendall, got sizes {sorted(set(sizes))}"
     assert fake.closed, "socket should be closed at end of worker"
 
 
@@ -120,10 +119,7 @@ def test_tcp_batch_interval_produces_multi_packet_boluses():
     # duration/interval = 6 boluses; allow 4..10 to cover startup grace
     # and the final tail flush at worker exit.
     n_calls = len(fake.sendalls)
-    assert 4 <= n_calls <= 10, (
-        f"expected 4..10 sendall calls over {duration}s at interval={interval}s, "
-        f"got {n_calls}"
-    )
+    assert 4 <= n_calls <= 10, f"expected 4..10 sendall calls over {duration}s at interval={interval}s, got {n_calls}"
 
     # --- Payload alignment -----------------------------------------------
     # Every packet is 12 bytes; every bolus is a whole number of packets.
