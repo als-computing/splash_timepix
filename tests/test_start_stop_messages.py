@@ -299,9 +299,14 @@ def test_final_flush_sent_before_stop(streaming_rig):
     """Bug #11 / issue 3: accumulated data from the last partial TDC cycles is
     published as one final event message before the stop.
 
-    Setup:  tdc=10 kHz, flush_interval=10 s  →  flush_every_n_cycles=100_000.
-    Stream: 5 s  →  ~50_000 TDC pulses (< flush_every_n_cycles) → no regular
-    flush fires.
+    Setup:  tdc=10 kHz, flush_interval=10 s.
+    Stream: 5 s of wallclock.
+    Under the wall-clock flush gate (server commit 754c857): the regular
+    gate fires when ``time.monotonic() - last_flush_time >= flush_interval``
+    so a 5 s stream with a 10 s gate emits 0 regular flushes.  The final
+    partial-cycle flush at stop is therefore the *only* event message —
+    if it is missing we get 0 events, which is the bug.
+
     Without the fix : 0 event messages received.
     With    the fix : at least 1 event message (the final flush) received.
 
