@@ -333,6 +333,7 @@ class _HeatmapCanvas(QWidget):
     def clear_data(self) -> None:
         self._data_full = None
         self._pixmap_ui = None
+        self._view = [0, 1, 0, 1]
         self.update()
 
     def set_zoom_mode(self, mode: str) -> None:
@@ -802,6 +803,9 @@ class HeatmapWidget(QWidget):
         self._data = None
         self._canvas.clear_data()
         self._stats_label.setText("No data")
+        self._current_x_view = (0, 1)
+        self._x_ruler.set_range(0, 1)
+        self._x_label.setText("Energy (eV)")
 
     def set_view(self, x0: int, x1: int, y0: int, y1: int) -> None:
         """Receive linked view update. Updates rulers without re-emitting view_changed."""

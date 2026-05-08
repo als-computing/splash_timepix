@@ -971,6 +971,7 @@ class OperatorTab(QWidget):
         self._flush_count = 0
         self._last_avg_2d = None
         self._n_energy = None
+        self._current_heatmap.clear()
         self._average_heatmap.clear()
         self._spectrum_plot.clear()
         for lbl in self._cursor_px_labels + self._cursor_ev_labels:
