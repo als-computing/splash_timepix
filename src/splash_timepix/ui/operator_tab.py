@@ -203,13 +203,13 @@ class OperatorTab(QWidget):
         self._zoom_rect_btn.clicked.connect(lambda: self._set_zoom_mode("rect"))
         zoom_layout.addWidget(self._zoom_rect_btn)
 
-        self._zoom_h_btn = QPushButton("↔ H-Zoom")
+        self._zoom_h_btn = QPushButton("↔ Hor")
         self._zoom_h_btn.setCheckable(True)
         self._zoom_h_btn.setStyleSheet(theme.checkable_button_style())
         self._zoom_h_btn.clicked.connect(lambda: self._set_zoom_mode("h"))
         zoom_layout.addWidget(self._zoom_h_btn)
 
-        self._zoom_v_btn = QPushButton("↕ V-Zoom")
+        self._zoom_v_btn = QPushButton("↕ Ver")
         self._zoom_v_btn.setCheckable(True)
         self._zoom_v_btn.setStyleSheet(theme.checkable_button_style())
         self._zoom_v_btn.clicked.connect(lambda: self._set_zoom_mode("v"))
@@ -221,7 +221,7 @@ class OperatorTab(QWidget):
         sep.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
         zoom_layout.addWidget(sep)
 
-        self._reset_view_btn = QPushButton("⟳ Reset Zoom")
+        self._reset_view_btn = QPushButton("⟳ Reset")
         self._reset_view_btn.setStyleSheet(theme.checkable_button_style())
         self._reset_view_btn.clicked.connect(self._reset_view)
         zoom_layout.addWidget(self._reset_view_btn)
