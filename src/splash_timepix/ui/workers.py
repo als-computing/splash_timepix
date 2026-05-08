@@ -336,6 +336,8 @@ class ProcessManager(QObject):
         n_bins: int = 350,
         collapse_y: bool = True,
         exit_on_disconnect: bool = True,
+        alignment: bool = False,
+        alignment_rate_hz: float = 30.0,
     ) -> bool:
         args = [
             "-m",
@@ -351,7 +353,12 @@ class ProcessManager(QObject):
             "--n-bins",
             str(n_bins),
         ]
-        if collapse_y:
+        if alignment:
+            # Alignment mode forces n_bins=1 and ignores collapse_y server-side;
+            # we still pass --n-bins above (harmless override below) so the CLI
+            # signature stays uniform across modes.
+            args += ["--alignment", "--alignment-rate-hz", str(float(alignment_rate_hz))]
+        elif collapse_y:
             args.append("--collapse-y")
         if exit_on_disconnect:
             args.append("--exit-on-disconnect")

@@ -24,7 +24,9 @@ from typing import Any, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-PREFERENCES_VERSION = 1
+# Bumped from 1 → 2 when alignment_* keys were added. Purely informational —
+# validate_and_clamp tolerates missing/unknown keys, so v1 files load cleanly.
+PREFERENCES_VERSION = 2
 
 # Combo *display text* values. These must match the items added to the combo
 # boxes in OperatorTab._setup_ui, because restoration uses
@@ -38,6 +40,12 @@ TDC_FREQUENCY_RANGE = (0.1, 1e9)
 CALLBACK_BATCH_SIZE_RANGE = (1, 10_000_000)
 N_BINS_RANGE = (500, 50_000)
 DURATION_RANGE = (1, 19_008_000)
+
+# Alignment-tab numeric ranges, mirrored from AlignmentTab._setup_ui.
+ALIGNMENT_RATE_HZ_RANGE = (1, 30)
+# Manual min/max levels span the practical range of uint32 alignment counts;
+# these are sanity bounds, not perceptually-tuned defaults.
+ALIGNMENT_LEVEL_RANGE = (0, 2**31 - 1)
 
 _PREFS_FILENAME = "operator_prefs.json"
 _TMP_SUFFIX = ".tmp"
@@ -54,6 +62,15 @@ def default_preferences() -> Dict[str, Any]:
         "n_bins": 10_000,
         "duration": 60,
         "output_dir": str(Path.home() / "Desktop" / "data"),
+        # Alignment-tab defaults. UI starts in auto-range with crosshair on,
+        # 30 Hz update, latest-only display, linear (non-log) intensity.
+        "alignment_rate_hz": 30,
+        "alignment_auto_range": True,
+        "alignment_manual_min": 0,
+        "alignment_manual_max": 100,
+        "alignment_log": False,
+        "alignment_show_integrated": False,
+        "alignment_show_crosshair": True,
     }
 
 
@@ -121,6 +138,13 @@ def _validate_output_dir(value: Any, fallback: str, name: str) -> str:
     return fallback
 
 
+def _validate_bool(value: Any, fallback: bool, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    logger.warning("Pref %s: %r not a bool; using default %r", name, value, fallback)
+    return fallback
+
+
 def validate_and_clamp(raw: Any) -> Dict[str, Any]:
     """Return a complete, in-range preferences dict from arbitrary input.
 
@@ -177,6 +201,48 @@ def validate_and_clamp(raw: Any) -> Dict[str, Any]:
         fallback=defaults["output_dir"],
         name="output_dir",
     )
+
+    # Alignment-tab keys. Same flat namespace as operator keys; adding them here
+    # rather than in a nested dict keeps the JSON shape and existing read/write
+    # codepaths simple.
+    out["alignment_rate_hz"] = _clamp_int(
+        raw.get("alignment_rate_hz", defaults["alignment_rate_hz"]),
+        *ALIGNMENT_RATE_HZ_RANGE,
+        fallback=defaults["alignment_rate_hz"],
+        name="alignment_rate_hz",
+    )
+    out["alignment_auto_range"] = _validate_bool(
+        raw.get("alignment_auto_range", defaults["alignment_auto_range"]),
+        fallback=defaults["alignment_auto_range"],
+        name="alignment_auto_range",
+    )
+    out["alignment_manual_min"] = _clamp_int(
+        raw.get("alignment_manual_min", defaults["alignment_manual_min"]),
+        *ALIGNMENT_LEVEL_RANGE,
+        fallback=defaults["alignment_manual_min"],
+        name="alignment_manual_min",
+    )
+    out["alignment_manual_max"] = _clamp_int(
+        raw.get("alignment_manual_max", defaults["alignment_manual_max"]),
+        *ALIGNMENT_LEVEL_RANGE,
+        fallback=defaults["alignment_manual_max"],
+        name="alignment_manual_max",
+    )
+    out["alignment_log"] = _validate_bool(
+        raw.get("alignment_log", defaults["alignment_log"]),
+        fallback=defaults["alignment_log"],
+        name="alignment_log",
+    )
+    out["alignment_show_integrated"] = _validate_bool(
+        raw.get("alignment_show_integrated", defaults["alignment_show_integrated"]),
+        fallback=defaults["alignment_show_integrated"],
+        name="alignment_show_integrated",
+    )
+    out["alignment_show_crosshair"] = _validate_bool(
+        raw.get("alignment_show_crosshair", defaults["alignment_show_crosshair"]),
+        fallback=defaults["alignment_show_crosshair"],
+        name="alignment_show_crosshair",
+    )
     return out
 
 
@@ -203,13 +269,33 @@ def load_operator_preferences(path: Optional[Union[Path, str]] = None) -> Dict[s
 def save_operator_preferences(prefs: Dict[str, Any], path: Optional[Union[Path, str]] = None) -> None:
     """Atomically persist ``prefs`` to ``path`` (defaults to user config).
 
+    The supplied ``prefs`` dict is *merged* with the existing on-disk state
+    (current file wins for keys not in ``prefs``, ``prefs`` wins where
+    overlapping). This lets callers persist only their subset (e.g. just the
+    operator-tab keys, or just the alignment-tab keys) without zeroing out
+    keys owned by another part of the UI.
+
     Validates/clamps on the way out so a misuse in the UI layer cannot write
     a malformed file. Creates the parent directory if missing. Writes to
     ``<path>.tmp`` then ``os.replace`` into the final name so a crash mid-
     write cannot corrupt the existing file.
     """
     p = Path(path) if path is not None else operator_prefs_path()
-    sanitized = validate_and_clamp(prefs)
+
+    # Read current on-disk state (best-effort) so partial saves preserve other
+    # tabs' keys. Any read failure collapses to an empty merge — equivalent to
+    # the pre-merge behavior.
+    existing: Dict[str, Any] = {}
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            existing = loaded
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        existing = {}
+
+    merged: Dict[str, Any] = {**existing, **prefs}
+    sanitized = validate_and_clamp(merged)
 
     parent = p.parent
     parent.mkdir(parents=True, exist_ok=True)

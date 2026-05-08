@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar
 from splash_timepix.serval_client import ServalClient
 
 from . import single_instance, theme
+from .alignment_tab import AlignmentTab
 from .engineering_tab import EngineeringTab
 from .operator_tab import OperatorTab
 from .workers import (
@@ -70,19 +71,31 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        # Tab widget
+        # Tab widget. Order: Alignment (default landing tab — beam alignment is
+        # the first thing operators do each session) → Operator → Engineering.
         self._tabs = QTabWidget()
+
+        # Alignment tab (first / default). Auto-stopped when the user switches
+        # to the Operator tab — see _on_tab_changed below.
+        self._alignment_tab = AlignmentTab()
+        self._alignment_tab.start_requested.connect(self._on_start_requested)
+        self._alignment_tab.stop_requested.connect(self._on_stop_requested)
+        self._alignment_idx = self._tabs.addTab(self._alignment_tab, "Alignment")
 
         # Operator tab
         self._operator_tab = OperatorTab()
         self._operator_tab.start_requested.connect(self._on_start_requested)
         self._operator_tab.stop_requested.connect(self._on_stop_requested)
-        self._tabs.addTab(self._operator_tab, "Operator")
+        self._operator_idx = self._tabs.addTab(self._operator_tab, "Operator")
 
-        # Engineering tab
+        # Engineering tab — viewing diagnostics during a live alignment run is
+        # explicitly allowed, so this tab does NOT trigger an auto-stop.
         self._engineering_tab = EngineeringTab()
         self._engineering_tab.kill_all_requested.connect(self._on_kill_all)
-        self._tabs.addTab(self._engineering_tab, "Engineering")
+        self._engineering_idx = self._tabs.addTab(self._engineering_tab, "Engineering")
+
+        # Auto-stop alignment on Operator-tab entry. See _on_tab_changed.
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         layout.addWidget(self._tabs)
 
@@ -178,12 +191,27 @@ class MainWindow(QMainWindow):
             except Exception:
                 self._current_frame_number = None
 
-        tdc_freq = params["tdc_frequency"]
-        tdc_channel = params["tdc_channel"]
-        tdc_edge = params["tdc_edge"]
-        callback_batch_size = params.get("callback_batch_size", 10_000)
-        n_bins = params.get("n_bins", 350)
-        duration = params["duration"]
+        # Alignment uses a curated subset of params; fall back to operator-tab
+        # widget defaults for fields it doesn't carry (TDC freq/channel/edge,
+        # parse batch, n_bins). The streaming server ignores these in alignment
+        # mode but still wants well-formed CLI args.
+        if mode == "alignment":
+            op_params = self._operator_tab._get_params()
+            tdc_freq = op_params["tdc_frequency"]
+            tdc_channel = op_params["tdc_channel"]
+            tdc_edge = op_params["tdc_edge"]
+            callback_batch_size = op_params.get("callback_batch_size", 10_000)
+            n_bins = op_params.get("n_bins", 350)
+            duration = params["duration"]
+            alignment_rate_hz = float(params.get("alignment_rate_hz", 30.0))
+        else:
+            tdc_freq = params["tdc_frequency"]
+            tdc_channel = params["tdc_channel"]
+            tdc_edge = params["tdc_edge"]
+            callback_batch_size = params.get("callback_batch_size", 10_000)
+            n_bins = params.get("n_bins", 350)
+            duration = params["duration"]
+            alignment_rate_hz = 30.0
 
         logger.info(
             f"Starting {mode}: TDC={tdc_freq}Hz, ch={tdc_channel}, edge={tdc_edge}, "
@@ -193,7 +221,7 @@ class MainWindow(QMainWindow):
             f"Starting {mode}: TDC={tdc_freq}Hz, parse_batch={callback_batch_size}, duration={duration}s"
         )
 
-        # Start streaming server (needed for all modes)
+        # Start streaming server (needed for all modes; alignment passes extra flags).
         if not self._process_manager.start_streaming_server(
             tdc_freq,
             tdc_channel,
@@ -201,6 +229,8 @@ class MainWindow(QMainWindow):
             callback_batch_size=callback_batch_size,
             n_bins=n_bins,
             exit_on_disconnect=True,
+            alignment=(mode == "alignment"),
+            alignment_rate_hz=alignment_rate_hz,
         ):
             QMessageBox.warning(self, "Error", "Failed to start streaming server")
             return
@@ -263,6 +293,7 @@ class MainWindow(QMainWindow):
 
             self._acquiring = True
             self._operator_tab.set_acquiring(True)
+            self._alignment_tab.set_acquiring(True)
 
         elif mode == "replay":
             # Replay mode: start live-cli with source file (no Serval needed)
@@ -277,6 +308,21 @@ class MainWindow(QMainWindow):
 
             self._acquiring = True
             self._operator_tab.set_acquiring(True)
+            self._alignment_tab.set_acquiring(True)
+
+        elif mode == "alignment":
+            # Alignment mode: identical pipeline to preview (live-cli + acq.py
+            # --preview), but the streaming server is already running with
+            # --alignment.  acq.py kicks Serval into a continuous acquisition;
+            # without it the detector pushes nothing through live-cli.  Output
+            # dir is unused in --preview mode but acq.py expects the flag, so
+            # pass an empty directory placeholder via the duration-only path.
+            self._engineering_tab.append_system_log("Starting alignment live-cli...")
+            self._status_bar.showMessage("Starting live-cli (alignment)...")
+            QTimer.singleShot(
+                1000,
+                lambda: self._start_live_cli_and_acq(params["duration"], "", True),
+            )
 
         else:
             # Start/Preview mode: need live-cli and acquisition
@@ -310,6 +356,7 @@ class MainWindow(QMainWindow):
 
         self._acquiring = True
         self._operator_tab.set_acquiring(True)
+        self._alignment_tab.set_acquiring(True)
 
     @Slot()
     def _on_stop_requested(self):
@@ -427,6 +474,7 @@ class MainWindow(QMainWindow):
 
         self._acquiring = False
         self._operator_tab.set_acquiring(False)
+        self._alignment_tab.set_acquiring(False)
         self._status_bar.showMessage("All processes stopped")
 
     @Slot(str)
@@ -474,10 +522,11 @@ class MainWindow(QMainWindow):
         """Handle acquisition completion - save average data."""
         self._acquiring = False
         self._operator_tab.set_acquiring(False)
+        self._alignment_tab.set_acquiring(False)
 
         mode = getattr(self, "_current_mode", "start")
 
-        if mode in ("preview", "simulator", "replay"):
+        if mode in ("preview", "simulator", "replay", "alignment"):
             self._status_bar.showMessage(f"{mode.capitalize()} complete")
             self._engineering_tab.append_system_log(f"{mode.capitalize()} complete")
             return
@@ -490,16 +539,49 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_flush_received(self, flush_data: FlushData):
-        """Handle incoming flush from ZMQ worker."""
-        self._operator_tab.on_flush_received(flush_data)
+        """Route incoming flushes by mode so each tab only sees its own shape.
+
+        Alignment flushes are (X, Y, 1) uint32 arrays which would crash the
+        operator tab's heatmap math; timing flushes are (X, n_bins) or
+        (X, Y, n_bins) which the alignment tab cannot render. The metadata's
+        ``mode`` field (added in TimePixStart and the static metadata in
+        ``app.py``) is the authoritative router. Defaults to "timing" so any
+        old streaming server / pre-mode-field message routes to the operator
+        tab as before.
+        """
+        meta = flush_data.metadata
+        mode = meta.get("mode", "timing")
+        if mode == "alignment":
+            self._alignment_tab.on_flush_received(flush_data)
+        else:
+            self._operator_tab.on_flush_received(flush_data)
 
         # Log to engineering tab
-        meta = flush_data.metadata
         flush_num = meta.get("flush_number", "?")
         cycles = meta.get("cycles_in_flush", "?")
         self._engineering_tab.append_zmq_log(
-            f"Flush #{flush_num}: {cycles} cycles, {np.sum(flush_data.array):.2e} counts"
+            f"[{mode}] Flush #{flush_num}: {cycles} cycles, {np.sum(flush_data.array):.2e} counts"
         )
+
+    @Slot(int)
+    def _on_tab_changed(self, new_index: int) -> None:
+        """Auto-stop alignment when the user switches to the Operator tab.
+
+        Engineering tab is intentionally exempt — viewing diagnostics during a
+        live alignment run is allowed (no auto-stop fires). The auto-stop is
+        silent (status-bar + engineering-log line) — no confirmation dialog.
+        """
+        if new_index != self._operator_idx:
+            return
+        if not self._acquiring:
+            return
+        if getattr(self, "_current_mode", None) != "alignment":
+            return
+        msg = "Alignment auto-stopped: switched to Operator"
+        logger.info(msg)
+        self._engineering_tab.append_system_log(msg)
+        self._status_bar.showMessage(msg)
+        self._on_stop_requested()
 
     @Slot(bool)
     def _on_zmq_connection_changed(self, connected: bool):
@@ -553,13 +635,19 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        # Save operator-sidebar preferences before tearing down workers, so a
-        # save exception cannot leave workers/processes running. Failures here
-        # must never block quit — log and continue.
+        # Save operator + alignment preferences before tearing down workers, so
+        # a save exception cannot leave workers/processes running. Both saves
+        # write into the same JSON file via a merge-on-write strategy in
+        # preferences.save_operator_preferences, so the order does not matter.
+        # Failures here must never block quit — log and continue.
         try:
             self._operator_tab.save_operator_preferences()
         except Exception:
             logger.exception("Failed to save operator preferences")
+        try:
+            self._alignment_tab.save_alignment_preferences()
+        except Exception:
+            logger.exception("Failed to save alignment preferences")
 
         logger.info("Closing application...")
 

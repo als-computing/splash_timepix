@@ -29,7 +29,7 @@ classifiers = [
 dependencies = ["numpy", "typer", "psutil", "opencv-python", "pyzmq", "msgpack", "requests", "pydantic"]
 
 [project.optional-dependencies]
-ui = ["PySide6>=6.5.0",]
+ui = ["PySide6>=6.5.0", "pyqtgraph>=0.13"]
 # Pin linters to match .pre-commit-config.yaml (avoids CI vs local version drift).
 dev = [
   "check-manifest",
