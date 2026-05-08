@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splash_timepix"
-version = "0.6.2"
+version = "0.6.3"
 description = "Code to stream from timepix"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -53,6 +53,9 @@ tpx-sim = "splash_timepix.simulator_cli:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"splash_timepix.ui" = ["assets/*.png"]
 
 # Tool configurations
 [tool.black]

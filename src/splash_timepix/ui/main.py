@@ -4,6 +4,7 @@ Coordinates all components: tabs, workers, and process management.
 """
 
 import logging
+import signal
 import sys
 from pathlib import Path
 from typing import Optional
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar
 
 from splash_timepix.serval_client import ServalClient
 
-from . import theme
+from . import single_instance, theme
 from .engineering_tab import EngineeringTab
 from .operator_tab import OperatorTab
 from .workers import (
@@ -551,6 +552,14 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
+        # Save operator-sidebar preferences before tearing down workers, so a
+        # save exception cannot leave workers/processes running. Failures here
+        # must never block quit — log and continue.
+        try:
+            self._operator_tab.save_operator_preferences()
+        except Exception:
+            logger.exception("Failed to save operator preferences")
+
         logger.info("Closing application...")
 
         self._waiting_for_streaming_ready = False
@@ -577,12 +586,170 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+def _show_already_running_dialog(holder_pid: Optional[int]) -> str:
+    """Show the second-instance dialog; return the chosen action.
+
+    Returns one of:
+      - ``"kill_and_reopen"`` — terminate the other instance, then start a
+        fresh UI here.
+      - ``"kill"`` — terminate the other instance and exit this process.
+      - ``"cancel"`` — do nothing; exit this process.
+
+    The Kill / Kill & Reopen buttons are hidden when ``holder_pid``
+    cannot be verified as our app via psutil, which protects against
+    PID reuse and cross-user signaling. In that case only Cancel is
+    offered.
+    """
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setWindowTitle("TimePix UI already running")
+    msg.setText("Another TimePix UI session is already running for this user.")
+
+    can_verify = holder_pid is not None and single_instance.is_other_instance_alive(holder_pid)
+
+    if can_verify:
+        msg.setInformativeText(
+            f"Close that window first, or click Kill to terminate it (pid {holder_pid}).\n\n" "Cancel to do nothing."
+        )
+    else:
+        msg.setInformativeText(
+            "Could not verify the other process — Kill is disabled. "
+            "Close that window manually first.\n\n"
+            "Cancel to do nothing."
+        )
+
+    # ActionRole buttons are laid out in insertion order (RejectRole /
+    # AcceptRole would otherwise be re-arranged by QDialogButtonBox per
+    # platform style — e.g. AcceptRole leftmost on GNOME). We want Cancel
+    # always at the very left, then Kill, then Kill & Reopen on the right.
+    cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.ActionRole)
+    if can_verify:
+        kill_btn = msg.addButton("Kill", QMessageBox.ButtonRole.ActionRole)
+        kill_reopen_btn = msg.addButton("Kill && Reopen", QMessageBox.ButtonRole.ActionRole)
+    else:
+        kill_btn = None
+        kill_reopen_btn = None
+    msg.setDefaultButton(cancel_btn)
+    msg.setEscapeButton(cancel_btn)
+
+    msg.exec()
+    clicked = msg.clickedButton()
+    if kill_reopen_btn is not None and clicked is kill_reopen_btn:
+        return "kill_and_reopen"
+    if kill_btn is not None and clicked is kill_btn:
+        return "kill"
+    return "cancel"
+
+
+def _confirm_force_kill(pid: int) -> bool:
+    """Second-stage confirmation before SIGKILL escalation."""
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Icon.Critical)
+    msg.setWindowTitle("Force-kill TimePix UI?")
+    msg.setText(f"Process {pid} did not exit after SIGTERM.")
+    msg.setInformativeText(
+        "Force-killing skips graceful shutdown of Serval / streaming-server / "
+        "live-cli, which may leave them as orphaned processes. Only do this "
+        "if the other window is truly stuck."
+    )
+    cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    kill_btn = msg.addButton("Force kill", QMessageBox.ButtonRole.DestructiveRole)
+    msg.setDefaultButton(cancel_btn)
+    msg.exec()
+    return msg.clickedButton() is kill_btn
+
+
+def _handle_singleton() -> bool:
+    """Acquire the singleton lock or run the recovery dialog flow.
+
+    Returns ``True`` if the caller should continue starting the UI, or
+    ``False`` if the caller should ``sys.exit(0)`` (the user chose
+    Cancel, chose Kill without reopen, or a kill attempt failed).
+
+    Must be called *before* :class:`MainWindow` is constructed (but
+    *after* :class:`QApplication` exists so dialog widgets can be
+    shown). Non-Linux platforms skip enforcement entirely.
+    """
+    try:
+        single_instance.acquire_lock()
+        return True
+    except single_instance.AlreadyRunning as e:
+        action = _show_already_running_dialog(e.pid)
+        if action == "cancel" or e.pid is None:
+            return False
+
+        # Both "kill" and "kill_and_reopen" terminate the other instance.
+        # The first instance's SIGTERM handler routes through closeEvent →
+        # ProcessManager.stop_all(), so its children are stopped before its
+        # FD closes and the kernel drops our lock.
+        if not single_instance.terminate_other_instance(e.pid):
+            # Either uid/cmdline check failed, or SIGTERM did not bring the
+            # process down within the timeout. Offer SIGKILL as a gated
+            # escalation; otherwise tell the user to retry.
+            if _confirm_force_kill(e.pid) and single_instance.force_kill_other_instance(e.pid):
+                pass  # fall through
+            else:
+                _show_terminate_failed_dialog(e.pid)
+                return False
+
+        if action == "kill":
+            # User asked us to terminate the other instance and exit; do
+            # not start a fresh UI here. They can relaunch when ready.
+            return False
+
+        # "kill_and_reopen": retry the flock once and continue starting the UI.
+        try:
+            single_instance.acquire_lock()
+            return True
+        except single_instance.AlreadyRunning:
+            _show_retry_dialog()
+            return False
+
+
+def _show_terminate_failed_dialog(pid: int) -> None:
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setWindowTitle("Could not terminate other instance")
+    msg.setText(f"Failed to terminate the existing TimePix UI (pid {pid}).")
+    msg.setInformativeText("Close that window manually, then relaunch.")
+    msg.exec()
+
+
+def _show_retry_dialog() -> None:
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Icon.Information)
+    msg.setWindowTitle("Lock still held")
+    msg.setText("The other instance is exiting but still holds the lock.")
+    msg.setInformativeText("Wait a moment and relaunch.")
+    msg.exec()
+
+
 def main():
     """Application entry point."""
     autostart_serval = "--autostart-serval" in sys.argv
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Route SIGTERM through Qt's event loop so MainWindow.closeEvent runs and
+    # ProcessManager.stop_all() takes the children with us. Without this the
+    # second-instance "Kill" path would orphan Serval/streaming-server/live-cli.
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+
+    # Python signal handlers only run when the interpreter regains control.
+    # Qt's exec() blocks in C++, so without periodic Python invocations a
+    # SIGTERM may sit pending until the next user event. A no-op QTimer on a
+    # short interval forces Qt to call a Python slot, giving the interpreter
+    # a chance to dispatch pending signals.
+    _sig_pump = QTimer()
+    _sig_pump.start(200)
+    _sig_pump.timeout.connect(lambda: None)
+
+    # Singleton enforcement must happen *before* constructing MainWindow so
+    # the second instance does not spin up workers it would immediately tear
+    # down. Non-Linux platforms skip enforcement (logs a warning).
+    if not _handle_singleton():
+        sys.exit(0)
 
     # Apply base dark theme stylesheet
     app.setStyleSheet(

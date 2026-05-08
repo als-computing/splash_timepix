@@ -48,12 +48,11 @@ import statistics
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import msgpack
 import pytest
 import zmq
-
 
 # =============================================================================
 # Grid (overridable via env for quick smoke runs)
@@ -272,8 +271,10 @@ def test_flush_burstiness_grid(streaming_rig):
     total_combos = len(CPS_VALUES) * len(TDC_VALUES)
     print("\n\n")
     print("=" * 100)
-    print(f"FLUSH BURSTINESS EXPERIMENT — {total_combos} combos, {DAQ_SECONDS}s each, "
-          f"flush_interval={FLUSH_INTERVAL_S}s")
+    print(
+        f"FLUSH BURSTINESS EXPERIMENT — {total_combos} combos, {DAQ_SECONDS}s each, "
+        f"flush_interval={FLUSH_INTERVAL_S}s"
+    )
     print("=" * 100)
 
     combo_idx = 0
@@ -358,10 +359,8 @@ def test_flush_burstiness_grid(streaming_rig):
     print("=" * 110)
     print("SUMMARY — sorted by burstiness (CV of inter-flush Δt, descending)")
     print("=" * 110)
-    print("CV = std(Δt) / mean(Δt).  CV ≈ 0 is perfectly regular; "
-          "CV ≥ 1 means bursts dominate.")
-    print("'<50ms' = fraction of inter-flush gaps below 50 ms, i.e. "
-          "flushes arriving almost on top of each other.")
+    print("CV = std(Δt) / mean(Δt).  CV ≈ 0 is perfectly regular; CV ≥ 1 means bursts dominate.")
+    print("'<50ms' = fraction of inter-flush gaps below 50 ms, i.e. flushes arriving almost on top of each other.")
     print("-" * 110)
 
     def _cv(r: ComboResult) -> float:
@@ -642,45 +641,32 @@ def test_batched_wire_regression(streaming_rig):
 
         # --- CV (burstiness) ----------------------------------------------
         if m["cv"] >= 0.5:
-            failures.append(
-                f"{label}: CV={m['cv']:.3f} exceeds 0.5 threshold "
-                f"(bursty pacing)"
-            )
+            failures.append(f"{label}: CV={m['cv']:.3f} exceeds 0.5 threshold (bursty pacing)")
 
         # --- Sub-50ms fraction --------------------------------------------
         if m["fraction_sub_50ms"] >= 0.1:
             failures.append(
-                f"{label}: fraction_sub_50ms={m['fraction_sub_50ms']:.3f} "
-                f">= 0.1 (microsecond-clustered emits)"
+                f"{label}: fraction_sub_50ms={m['fraction_sub_50ms']:.3f} >= 0.1 (microsecond-clustered emits)"
             )
 
         # --- Max gap ------------------------------------------------------
         if m["max_gap_s"] >= 2.0 * _BATCHED_FLUSH_INTERVAL_S:
             failures.append(
-                f"{label}: max_gap={m['max_gap_s']:.3f}s "
-                f">= 2 * flush_interval ({2*_BATCHED_FLUSH_INTERVAL_S:.3f}s)"
+                f"{label}: max_gap={m['max_gap_s']:.3f}s >= 2 * flush_interval ({2*_BATCHED_FLUSH_INTERVAL_S:.3f}s)"
             )
 
         # --- Flush number sequence ----------------------------------------
         expected_seq = list(range(1, len(combo.flush_numbers) + 1))
         if combo.flush_numbers != expected_seq:
             failures.append(
-                f"{label}: flush_numbers not 1..N: {combo.flush_numbers[:8]}... "
-                f"(expected {expected_seq[:8]}...)"
+                f"{label}: flush_numbers not 1..N: {combo.flush_numbers[:8]}... (expected {expected_seq[:8]}...)"
             )
 
         # --- Monotonic total_cycles ---------------------------------------
         tch = combo.total_cycles_history
-        non_monotonic = [
-            (i, tch[i], tch[i + 1])
-            for i in range(len(tch) - 1)
-            if tch[i + 1] < tch[i]
-        ]
+        non_monotonic = [(i, tch[i], tch[i + 1]) for i in range(len(tch) - 1) if tch[i + 1] < tch[i]]
         if non_monotonic:
-            failures.append(
-                f"{label}: total_cycles not monotonic at indices "
-                f"{non_monotonic[:3]}"
-            )
+            failures.append(f"{label}: total_cycles not monotonic at indices {non_monotonic[:3]}")
 
         # --- Conservation of cycles (the killer invariant) ----------------
         # Catches: off-by-one in cycles_in_flush, double-emit from TOCTOU,

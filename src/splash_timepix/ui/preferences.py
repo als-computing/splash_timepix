@@ -1,0 +1,232 @@
+"""Persistent operator-sidebar preferences (JSON, atomic write, clamp on load).
+
+The acquisition-settings sidebar in :class:`splash_timepix.ui.operator_tab.OperatorTab`
+is restored from ``operator_prefs.json`` at startup and written back on a clean
+quit. This module owns the on-disk format, the path resolution, and the
+validate/clamp logic; the tab itself just calls :func:`load_operator_preferences`
+and :func:`save_operator_preferences`.
+
+Saves are atomic (write to ``.tmp``, then ``os.replace``) so a crash during
+write cannot corrupt the existing file. Loads tolerate a missing file,
+malformed JSON, and out-of-range / unknown values: the sanitized result is
+always a complete, in-range preferences dict, never raising into the UI layer.
+
+Crash-time saves are intentionally lost — JSON only updates on a clean exit.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+
+logger = logging.getLogger(__name__)
+
+PREFERENCES_VERSION = 1
+
+# Combo *display text* values. These must match the items added to the combo
+# boxes in OperatorTab._setup_ui, because restoration uses
+# QComboBox.setCurrentText(...) which only matches displayed item text exactly.
+TDC_CHANNEL_VALUES = ("Both", "1", "2")
+TDC_EDGE_VALUES = ("Rising", "Falling")
+
+# Numeric ranges, mirrored from the QSpinBox / QDoubleSpinBox setRange(...)
+# calls in OperatorTab._setup_ui. Keep these in sync with the widget config.
+TDC_FREQUENCY_RANGE = (0.1, 1e9)
+CALLBACK_BATCH_SIZE_RANGE = (1, 10_000_000)
+N_BINS_RANGE = (500, 50_000)
+DURATION_RANGE = (1, 19_008_000)
+
+_PREFS_FILENAME = "operator_prefs.json"
+_TMP_SUFFIX = ".tmp"
+
+
+def default_preferences() -> Dict[str, Any]:
+    """Return a fresh preferences dict matching the widgets' built-in defaults."""
+    return {
+        "preferences_version": PREFERENCES_VERSION,
+        "tdc_frequency": 1000.0,
+        "tdc_channel_text": "Both",
+        "tdc_edge_text": "Rising",
+        "callback_batch_size": 10_000,
+        "n_bins": 10_000,
+        "duration": 60,
+        "output_dir": str(Path.home() / "Desktop" / "data"),
+    }
+
+
+def config_dir() -> Path:
+    """Resolve the per-user config dir, honoring ``XDG_CONFIG_HOME``."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "splash_timepix"
+
+
+def operator_prefs_path(base: Optional[Path] = None) -> Path:
+    """Path to ``operator_prefs.json`` under the config dir (or override)."""
+    return (base if base is not None else config_dir()) / _PREFS_FILENAME
+
+
+def _clamp_float(value: Any, lo: float, hi: float, fallback: float, name: str) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Pref %s: cannot coerce %r to float; using default %s", name, value, fallback)
+        return fallback
+    if v != v:  # NaN
+        logger.warning("Pref %s: NaN; using default %s", name, fallback)
+        return fallback
+    if v < lo:
+        logger.warning("Pref %s: %s below min %s; clamping", name, v, lo)
+        return lo
+    if v > hi:
+        logger.warning("Pref %s: %s above max %s; clamping", name, v, hi)
+        return hi
+    return v
+
+
+def _clamp_int(value: Any, lo: int, hi: int, fallback: int, name: str) -> int:
+    try:
+        # Reject bools (which are ints in Python) and float-like inputs that
+        # would silently truncate.
+        if isinstance(value, bool):
+            raise TypeError
+        v = int(value)
+        if isinstance(value, float) and not value.is_integer():
+            raise TypeError
+    except (TypeError, ValueError):
+        logger.warning("Pref %s: cannot coerce %r to int; using default %s", name, value, fallback)
+        return fallback
+    if v < lo:
+        logger.warning("Pref %s: %s below min %s; clamping", name, v, lo)
+        return lo
+    if v > hi:
+        logger.warning("Pref %s: %s above max %s; clamping", name, v, hi)
+        return hi
+    return v
+
+
+def _validate_choice(value: Any, choices: tuple, fallback: str, name: str) -> str:
+    if isinstance(value, str) and value in choices:
+        return value
+    logger.warning("Pref %s: %r not in %s; using default %r", name, value, choices, fallback)
+    return fallback
+
+
+def _validate_output_dir(value: Any, fallback: str, name: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value
+    logger.warning("Pref %s: %r not a non-empty string; using default %r", name, value, fallback)
+    return fallback
+
+
+def validate_and_clamp(raw: Any) -> Dict[str, Any]:
+    """Return a complete, in-range preferences dict from arbitrary input.
+
+    Unknown keys are dropped silently; missing keys fall back to defaults;
+    out-of-range values are clamped with a warning. Non-dict inputs (e.g. a
+    JSON file containing a list) yield the full default set.
+    """
+    defaults = default_preferences()
+    if not isinstance(raw, dict):
+        if raw is not None:
+            logger.warning("Preferences: top-level not a dict (%r); using defaults", type(raw).__name__)
+        return defaults
+
+    out: Dict[str, Any] = {"preferences_version": PREFERENCES_VERSION}
+
+    out["tdc_frequency"] = _clamp_float(
+        raw.get("tdc_frequency", defaults["tdc_frequency"]),
+        *TDC_FREQUENCY_RANGE,
+        fallback=defaults["tdc_frequency"],
+        name="tdc_frequency",
+    )
+    out["tdc_channel_text"] = _validate_choice(
+        raw.get("tdc_channel_text", defaults["tdc_channel_text"]),
+        TDC_CHANNEL_VALUES,
+        fallback=defaults["tdc_channel_text"],
+        name="tdc_channel_text",
+    )
+    out["tdc_edge_text"] = _validate_choice(
+        raw.get("tdc_edge_text", defaults["tdc_edge_text"]),
+        TDC_EDGE_VALUES,
+        fallback=defaults["tdc_edge_text"],
+        name="tdc_edge_text",
+    )
+    out["callback_batch_size"] = _clamp_int(
+        raw.get("callback_batch_size", defaults["callback_batch_size"]),
+        *CALLBACK_BATCH_SIZE_RANGE,
+        fallback=defaults["callback_batch_size"],
+        name="callback_batch_size",
+    )
+    out["n_bins"] = _clamp_int(
+        raw.get("n_bins", defaults["n_bins"]),
+        *N_BINS_RANGE,
+        fallback=defaults["n_bins"],
+        name="n_bins",
+    )
+    out["duration"] = _clamp_int(
+        raw.get("duration", defaults["duration"]),
+        *DURATION_RANGE,
+        fallback=defaults["duration"],
+        name="duration",
+    )
+    out["output_dir"] = _validate_output_dir(
+        raw.get("output_dir", defaults["output_dir"]),
+        fallback=defaults["output_dir"],
+        name="output_dir",
+    )
+    return out
+
+
+def load_operator_preferences(path: Optional[Union[Path, str]] = None) -> Dict[str, Any]:
+    """Load and sanitize preferences from ``path`` (defaults to the user config).
+
+    Never raises: a missing file, unreadable file, malformed JSON, or
+    out-of-range values all collapse to the default-and-clamp path with a
+    warning. The returned dict is always complete and in-range.
+    """
+    p = Path(path) if path is not None else operator_prefs_path()
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        logger.info("Preferences: %s does not exist; using defaults", p)
+        return default_preferences()
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Preferences: failed to read %s (%s); using defaults", p, e)
+        return default_preferences()
+    return validate_and_clamp(raw)
+
+
+def save_operator_preferences(prefs: Dict[str, Any], path: Optional[Union[Path, str]] = None) -> None:
+    """Atomically persist ``prefs`` to ``path`` (defaults to user config).
+
+    Validates/clamps on the way out so a misuse in the UI layer cannot write
+    a malformed file. Creates the parent directory if missing. Writes to
+    ``<path>.tmp`` then ``os.replace`` into the final name so a crash mid-
+    write cannot corrupt the existing file.
+    """
+    p = Path(path) if path is not None else operator_prefs_path()
+    sanitized = validate_and_clamp(prefs)
+
+    parent = p.parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_path = p.with_name(p.name + _TMP_SUFFIX)
+    payload = json.dumps(sanitized, indent=2, sort_keys=True) + "\n"
+
+    # Write + fsync the tmp file before replacing so the rename target's
+    # contents are guaranteed durable (modulo FS quirks). os.replace is
+    # atomic on POSIX within a single filesystem.
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError:
+            # Some filesystems (tmpfs in containers) don't support fsync;
+            # the replace below is still atomic on POSIX.
+            pass
+    os.replace(tmp_path, p)

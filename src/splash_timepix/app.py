@@ -926,8 +926,7 @@ def main(
         if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
             if not server.wait_for_idle(timeout=5.0):
                 logger.warning(
-                    "ingest queue did not drain within 5s; "
-                    "stop.total_cycles may understate the true cycle count"
+                    "ingest queue did not drain within 5s; stop.total_cycles may understate the true cycle count"
                 )
             do_final_flush()
             _wait_for_xyt_drain()
