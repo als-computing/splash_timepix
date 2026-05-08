@@ -10,9 +10,9 @@ Why this exists
 In production (behind luna-iterator) the server used to emit flushes in
 bursts: the sorter upstream batched packets in multi-second chunks, so the
 server saw many TDCs back-to-back and the *original* TDC-count-based flush
-gate fired repeatedly inside a single ``data_callback`` invocation.  See
-``solution.md``.  Server commit ``754c857`` replaced the cycle-count gate
-with a wall-clock gate: ``emit_flush_if_due`` now fires when
+gate fired repeatedly inside a single ``data_callback`` invocation.  Server
+commit ``754c857`` replaced the cycle-count gate with a wall-clock gate:
+``emit_flush_if_due`` now fires when
 ``time.monotonic() - last_flush_time >= flush_interval``, called from both
 ``handle_tdc`` and the main-loop silence watchdog, so flush cadence is
 decoupled from TDC arrival cadence.
@@ -28,8 +28,8 @@ Design
 ------
 
 - 5x5 grid of (cps, tdc) — 25 combos, logarithmic in both axes.
-- DAQ = 15 s per combo, ``flush_interval = 1 s`` (matches the symptom case
-  in ``solution.md``).
+- DAQ = 15 s per combo, ``flush_interval = 1 s`` (matches the original
+  symptom case that motivated commit ``754c857``).
 - Fresh server subprocess per combo via the ``streaming_rig`` fixture.
 - Simulator spawned via ``simulator_cli --auto-start --duration 15``.
 - Per combo we record ``time.monotonic()`` at every ``recv()`` of an event

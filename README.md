@@ -82,7 +82,6 @@ pre-commit install
 Additional markdown guides in the repository:
 
 - [Socket server](info/SOCKET_SERVER_README.md) — threading, ring buffer, and parser callback behavior
-- [Implementation overview](info/IMPLEMENTATION_OVERVIEW.md) — start/stop ZMQ messages, schemas, and listener pattern (ArroyoXPS alignment)
 - [Sample start message](info/SAMPLE_START_MESSAGE.md) — example ZMQ start message (wire format and fields)
 - [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration)
 
@@ -444,7 +443,7 @@ Data Source → Socket Server → Callback (Binning) → Processing Queue → Wo
 3. Plotting/ZMQ Worker Thread (output bound)
 4. Input Listener Thread (user commands)
 
-See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server details. For the start/stop design and message flow, see [info/IMPLEMENTATION_OVERVIEW.md](info/IMPLEMENTATION_OVERVIEW.md).
+See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server details. The start/stop wire format is documented in [info/SAMPLE_START_MESSAGE.md](info/SAMPLE_START_MESSAGE.md), and the schema definitions live in `src/splash_timepix/schemas.py`.
 
 ## Troubleshooting
 
