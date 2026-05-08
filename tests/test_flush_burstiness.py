@@ -7,16 +7,22 @@ ZMQ ``event`` messages as they arrive at a subscriber.
 Why this exists
 ---------------
 
-In production (behind luna-iterator) the server emits flushes in bursts: the
-sorter upstream batches packets in multi-second chunks, so the server sees
-many TDCs back-to-back and the current TDC-count-based flush gate fires
-repeatedly inside a single ``data_callback`` invocation.  See ``solution.md``.
+In production (behind luna-iterator) the server used to emit flushes in
+bursts: the sorter upstream batched packets in multi-second chunks, so the
+server saw many TDCs back-to-back and the *original* TDC-count-based flush
+gate fired repeatedly inside a single ``data_callback`` invocation.  See
+``solution.md``.  Server commit ``754c857`` replaced the cycle-count gate
+with a wall-clock gate: ``emit_flush_if_due`` now fires when
+``time.monotonic() - last_flush_time >= flush_interval``, called from both
+``handle_tdc`` and the main-loop silence watchdog, so flush cadence is
+decoupled from TDC arrival cadence.
 
-In this test the simulator sends packets one-at-a-time over TCP (so no
-upstream batching), but the ``SocketDataServer`` still batches callbacks
-(``callback_batch_size=10`` by default) and the server's flush gate is still
-cycle-count-based.  When the TDC rate is much higher than the configured
-flush rate, we still expect to see short inter-flush deltas inside a batch.
+This test suite stays useful post-fix as a *regression* harness: the
+bursty-wire test (``test_batched_wire_regression``) asserts the green-path
+invariants (CV < 0.5, no microsecond-clustered emits, monotonic flush
+numbers, conservation of cycles) that would break again if the gate ever
+slipped back to event-driven semantics.  The smooth-wire grid is purely
+observational and prints CV / count-vs-expected per combo for diagnostics.
 
 Design
 ------
@@ -73,11 +79,19 @@ TDC_VALUES: Tuple[int, ...] = _env_int_tuple("BURSTINESS_TDC", (1, 10, 100, 1_00
 DAQ_SECONDS: int = int(os.environ.get("BURSTINESS_DAQ", 15))
 FLUSH_INTERVAL_S: float = float(os.environ.get("BURSTINESS_FLUSH", 1.0))
 
-# Give the simulator subprocess generous grace over the DAQ window so we do
-# not truncate the tail on slow machines.  15 s DAQ + ~5 s buffer.
-SIM_WAIT_BUDGET_S: float = 25.0
+# Wallclock budget for the simulator's wire stream to drain on the receiver.
+# Must exceed the nominal DAQ window by enough headroom to cover TCP back-
+# pressure at the highest-load combo (cps=100k, tdc=10k Hz, tcp_batch=2 s):
+# the server's parse + per-flush ZMQ publish saturates the recv loop, which
+# stalls the simulator's sendall and stretches a 15 s synthetic stream to
+# ~40 s of wallclock on the GitHub Actions ubuntu-latest runner. 4x DAQ
+# leaves comfortable margin without unbounding the test on a real hang.
+SIM_WAIT_BUDGET_S: float = 60.0
 
-# After sim exits we still need to see the stop message on the SUB socket.
+# After the sim closes its TCP socket the server still needs to flush its
+# ingest queue, take the final cycle-count snapshot, and publish the stop
+# message on the ZMQ PUB socket. 20 s comfortably covers that even under
+# the heavy-load combo where the queue can hold a few seconds of arrears.
 STOP_WAIT_BUDGET_S: float = 20.0
 
 
@@ -307,12 +321,6 @@ def test_flush_burstiness_grid(streaming_rig):
                 counting=False,  # avoid per-packet parse overhead
             )
 
-            # Compute expected flush count:
-            #   flush_every_n_cycles = max(1, int(flush_interval * tdc))
-            #   one flush fires every Nth TDC, DAQ=15s → tdc*15 TDCs total
-            f_every = max(1, int(FLUSH_INTERVAL_S * tdc))
-            expected = max(0.0, (tdc * DAQ_SECONDS) / f_every - 1)  # first flush at cycle N (not 0)
-
             # Collect until stop or budget exhausted.
             deadline = time.monotonic() + SIM_WAIT_BUDGET_S + STOP_WAIT_BUDGET_S
             combo = _collect_with_timestamps(
@@ -322,7 +330,14 @@ def test_flush_burstiness_grid(streaming_rig):
             combo.cps = cps
             combo.tdc = tdc
             combo.flush_interval_s = FLUSH_INTERVAL_S
-            combo.expected_flushes = expected
+
+            # Wall-clock flush gate (server commit 754c857): expected count
+            # tracks the *observed* stream wall-clock duration, not the
+            # nominal DAQ window. For smooth-wire combos stream ≈ DAQ; under
+            # any TCP backpressure the stream stretches and expected scales
+            # accordingly. The printed "GRID VIEW — flushes received vs
+            # expected" stays meaningful in both regimes.
+            combo.expected_flushes = max(0.0, combo.stream_duration_s / FLUSH_INTERVAL_S)
 
             # Reap the sim (we ran it with --duration so it exits by itself;
             # under the sandbox we cannot kill() it, so we just wait).
@@ -418,40 +433,45 @@ def test_flush_burstiness_grid(streaming_rig):
 
 
 # =============================================================================
-# Bursty-wire regression test (expected to FAIL against the unfixed server)
+# Bursty-wire regression test (post-fix: asserts the green-path baseline)
 # =============================================================================
 #
-# Reproduces the production Serval+luna-iterator symptom in CI by driving
-# the simulator with ``tcp_batch_interval_s > 0``: bytes are accumulated
-# in-memory for that many seconds, then emitted in one ``sendall`` per
-# bolus.  The server then chews through the whole bolus back-to-back on
-# its TCP receive thread, and its current cycle-count flush gate fires
-# all the flushes for the bolus within a few milliseconds of each other.
-# Wall-clock silence between boluses produces multi-second gaps.  The
-# result: bursty flushes instead of the one-per-flush-interval cadence
-# the UI needs.
+# Reproduces the production Serval+luna-iterator wire pattern in CI by
+# driving the simulator with ``tcp_batch_interval_s > 0``: bytes are
+# accumulated in-memory for that many seconds, then emitted in one
+# ``sendall`` per bolus.  The server then chews through the whole bolus
+# back-to-back on its TCP receive thread.
 #
-# Once the wall-clock flush gate from solution.md lands in app.py, this
-# test is expected to PASS with the same parameters.  That red-then-
-# green transition is the acceptance criterion for the fix.
+# Under the *original* cycle-count flush gate this produced multiple
+# flushes within a few milliseconds of each other (one per cycle-count
+# crossing inside a single ``data_callback`` invocation), then multi-
+# second silence until the next bolus — i.e. bursty ZMQ output instead of
+# the one-per-flush-interval cadence the UI needs.
+#
+# Server commit ``754c857`` switched the flush gate to wall-clock
+# (``emit_flush_if_due`` checks ``time.monotonic() - last_flush_time >=
+# flush_interval``), which decouples flush cadence from TDC arrival
+# cadence.  This test now asserts the post-fix invariants — CV < 0.5,
+# no microsecond-clustered emits, monotonic 1..N flush numbers, and
+# conservation of cycles — and so a failure here means a real
+# regression in the gate semantics.
 # =============================================================================
 
-# Parameters chosen to reproduce the production "bolus" regime.  The
-# simulator emits 2s-wide boluses; with flush_interval=1.0, each bolus
-# carries ~2 flush-intervals of data, so each bolus triggers ~2 flushes
-# back-to-back on the server's TCP thread before the next bolus arrives
-# ~2s later.  That mirrors the luna-iterator pattern described in
-# solution.md.  Intentionally deviates from the smooth-wire grid above
-# (tcp_batch_interval_s=0) to isolate the wire-level burst.
+# Parameters chosen to reproduce the production "bolus" regime on the
+# wire.  The simulator emits 2 s-wide boluses; with flush_interval=1.0,
+# each bolus carries ~2 flush-intervals worth of data.  Under the
+# wall-clock gate we expect the server to space those ~2 flushes evenly
+# at ~1 s intervals regardless of when the bolus arrives.  Intentionally
+# deviates from the smooth-wire grid above (tcp_batch_interval_s=0) to
+# isolate any wire-level burst leaking through to the ZMQ side.
 _BATCHED_TCP_INTERVAL_S: float = float(os.environ.get("BATCHED_TCP_INTERVAL_S", 2.0))
 _BATCHED_FLUSH_INTERVAL_S: float = float(os.environ.get("BATCHED_FLUSH", 1.0))
 _BATCHED_DAQ_SECONDS: int = int(os.environ.get("BATCHED_DAQ", 15))
 
-# Three combos covering low/mid/high rate.  At all three, the bolus
-# interval is >= flush_interval so 2+ flushes sit inside each callback
-# invocation — that is the burstiness trigger.  All use the same
-# flush_interval so the expected-flush arithmetic is identical across
-# combos.
+# Three combos covering low/mid/high rate.  At the high-rate combo
+# (cps=100k, tdc=10k Hz) TCP backpressure stretches the wire stream to
+# several times the nominal DAQ window — the test's count tolerance
+# scales off observed stream_duration so this is expected and benign.
 _BATCHED_COMBOS: Tuple[Tuple[int, int], ...] = (
     # (cps, tdc_frequency_hz)
     (1_000, 100),
@@ -519,25 +539,26 @@ def _write_artifact(metrics: List[dict], path: str) -> None:
 def test_batched_wire_regression(streaming_rig):
     """Pass/fail regression test that exercises the bursty-wire regime.
 
-    Against the UNFIXED server (current state):
-        - The cycle-count flush gate fires every time cycle_count crosses
-          a multiple of flush_every_n_cycles.  Multiple crossings inside
-          a single callback invocation → multiple flushes at near-zero
-          wall-clock separation, then N seconds of silence until the
-          next bolus.  Expect failures on CV, fraction_sub_50ms, and
-          n_flushes tolerance; possibly on sum(cycles_in_flush) ==
-          stop.total_cycles if the off-by-one bites.
+    Asserts the post-fix (server commit 754c857, wall-clock flush gate)
+    invariants under a 2 s-bolus wire pattern:
 
-    Against the FIXED server (post-Phase 2):
-        - The wall-clock gate decouples flush timing from TDC arrival.
-          Expect CV < 0.5, sub-50ms ~ 0, counts within tolerance, and
-          conservation of cycles holding exactly.
+        - CV < 0.5  — flush pacing must be near-uniform; a regression to
+          the cycle-count gate would push CV to 0.84-0.96 against this
+          fixture.
+        - fraction_sub_50ms < 0.1  — no microsecond-clustered emits;
+          the cycle-count gate produced 7-43% sub-50ms gaps here.
+        - n_flushes within 0.7-1.3 of (stream_duration / flush_interval)
+          — expected scales with observed wire-drain duration so heavy-
+          load combos under TCP backpressure are not flagged for the
+          backpressure itself, only for genuine pacing bugs.
+        - flush_numbers contiguous 1..N, total_cycles monotonic, and
+          sum(event.cycles_in_flush) == stop.total_cycles — conservation
+          invariants the UI's running averages depend on.
 
     The test writes a JSON artifact to ``/tmp/burstiness_latest.json``
-    on every run; the outer workflow renames this to
-    ``/tmp/burstiness_before.json`` after the red run and
-    ``/tmp/burstiness_after.json`` after the green run so the operator
-    can quantify the improvement.
+    on every run.  Historical workflow: rename to
+    ``/tmp/burstiness_before.json`` / ``burstiness_after.json`` to diff
+    pacing metrics across server changes that touch the flush path.
     """
     results: List[ComboResult] = []
 
@@ -574,9 +595,6 @@ def test_batched_wire_regression(streaming_rig):
             tcp_batch_interval_s=_BATCHED_TCP_INTERVAL_S,
         )
 
-        f_every = max(1, int(_BATCHED_FLUSH_INTERVAL_S * tdc))
-        expected = max(0.0, (tdc * _BATCHED_DAQ_SECONDS) / f_every - 1)
-
         deadline = time.monotonic() + SIM_WAIT_BUDGET_S + STOP_WAIT_BUDGET_S
         combo = _collect_with_timestamps(
             rig.sub_sock,
@@ -585,7 +603,14 @@ def test_batched_wire_regression(streaming_rig):
         combo.cps = cps
         combo.tdc = tdc
         combo.flush_interval_s = _BATCHED_FLUSH_INTERVAL_S
-        combo.expected_flushes = expected
+
+        # Wall-clock flush gate (server commit 754c857): the streaming server
+        # publishes one flush per flush_interval of wallclock during the
+        # stream, so expected count tracks the *observed* stream duration —
+        # not the nominal DAQ window. For low-cps combos stream ≈ DAQ; for
+        # the high-cps combo, TCP backpressure stretches stream to several
+        # times the DAQ duration, and expected scales accordingly.
+        combo.expected_flushes = max(0.0, combo.stream_duration_s / _BATCHED_FLUSH_INTERVAL_S)
 
         try:
             sim_proc.wait(timeout=3)
