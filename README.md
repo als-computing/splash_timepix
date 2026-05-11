@@ -28,6 +28,12 @@ To use the PySide6 acquisition UI, also install the optional `ui` extra:
 pip install -e ".[ui]"
 ```
 
+### Linux: UDP receive buffers (Serval / streaming host)
+
+On any **Linux** machine that will **receive high-rate detector UDP traffic** (for example the Serval or acquisition PC), configure kernel UDP socket buffer limits **before your first live acquisition**. Serval expects a large receive buffer; the default kernel ceiling can silently cap it and increase the risk of packet loss under burst traffic.
+
+Follow the step-by-step **`sysctl` / `sysctl.d` instructions** in [UDP receive buffers (first-time Linux setup)](info/UDP_RECEIVER_BUFFER_LIMITS.md).
+
 ### Optional: register the UI with GNOME
 
 On a fresh Linux/GNOME machine the UI launches fine via `tpx-ui`, but the
@@ -83,6 +89,7 @@ Additional markdown guides in the repository:
 
 - [Socket server](info/SOCKET_SERVER_README.md) — threading, ring buffer, and parser callback behavior
 - [Sample start message](info/SAMPLE_START_MESSAGE.md) — example ZMQ start message (wire format and fields)
+- [UDP receive buffers (first-time Linux setup)](info/UDP_RECEIVER_BUFFER_LIMITS.md) — raise `net.core.rmem_*` for Serval/streaming hosts (`sysctl.d` drop-in)
 - [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration)
 
 ## Architecture
