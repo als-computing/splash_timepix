@@ -89,8 +89,8 @@ Additional markdown guides in the repository:
 
 - [Socket server](info/SOCKET_SERVER_README.md) — threading, ring buffer, and parser callback behavior
 - [Sample start message](info/SAMPLE_START_MESSAGE.md) — example ZMQ start message (wire format and fields)
-- [UDP receive buffers (first-time Linux setup)](info/UDP_RECEIVER_BUFFER_LIMITS.md) — raise `net.core.rmem_*` for Serval/streaming hosts (`sysctl.d` drop-in)
-- [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration)
+- [UDP receive buffers (first-time Linux setup)](info/UDP_RECEIVER_BUFFER_LIMITS.md) —  raise `net.core.rmem_*` for Serval/streaming hosts (`sysctl.d` drop-in)
+- [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration).
 
 ## Architecture
 
