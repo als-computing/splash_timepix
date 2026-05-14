@@ -79,6 +79,8 @@ def default_preferences() -> Dict[str, Any]:
         "alignment_binarize": True,
         "alignment_show_integrated": False,
         "alignment_show_crosshair": True,
+        # Alignment-only local simulator (synthetic flushes; no Serval/live-cli).
+        "alignment_simulator": False,
     }
 
 
@@ -257,6 +259,11 @@ def validate_and_clamp(raw: Any) -> Dict[str, Any]:
         raw.get("alignment_show_crosshair", defaults["alignment_show_crosshair"]),
         fallback=defaults["alignment_show_crosshair"],
         name="alignment_show_crosshair",
+    )
+    out["alignment_simulator"] = _validate_bool(
+        raw.get("alignment_simulator", defaults["alignment_simulator"]),
+        fallback=defaults["alignment_simulator"],
+        name="alignment_simulator",
     )
     return out
 

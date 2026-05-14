@@ -158,6 +158,11 @@ def input_style() -> str:
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
             border-color: {BLUE_PRIMARY};
         }}
+        QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+            background-color: {BG_BUTTON_GROUP};
+            color: {TEXT_MUTED};
+            border-color: {BORDER_SUBTLE};
+        }}
     """
 
 

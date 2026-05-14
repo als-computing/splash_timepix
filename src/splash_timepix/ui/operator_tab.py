@@ -87,6 +87,7 @@ class OperatorTab(QWidget):
             self.load_operator_preferences()
         except Exception:  # pragma: no cover - defensive
             logger.exception("Failed to load operator preferences; using widget defaults")
+        self._refresh_mode_buttons_state()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -160,7 +161,7 @@ class OperatorTab(QWidget):
         view_layout.setContentsMargins(8, 6, 8, 6)
         view_layout.setSpacing(8)
 
-        cmap_label = QLabel("Colormap:")
+        cmap_label = QLabel("Colormap")
         cmap_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         view_layout.addWidget(cmap_label)
 
@@ -273,7 +274,7 @@ class OperatorTab(QWidget):
         )
         # TDC Frequency
         tdc_row = QHBoxLayout()
-        tdc_label = QLabel("TDC Frequency (Hz):")
+        tdc_label = QLabel("TDC Frequency (Hz)")
         tdc_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         tdc_label.setToolTip(_tt_tdc_freq)
         tdc_row.addWidget(tdc_label)
@@ -292,7 +293,7 @@ class OperatorTab(QWidget):
         )
         # TDC Channel
         tdc_ch_row = QHBoxLayout()
-        tdc_ch_label = QLabel("TDC Channel:")
+        tdc_ch_label = QLabel("TDC Channel")
         tdc_ch_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         tdc_ch_label.setToolTip(_tt_tdc_ch)
         tdc_ch_row.addWidget(tdc_ch_label)
@@ -306,7 +307,7 @@ class OperatorTab(QWidget):
         _tt_tdc_edge = "Trigger on the rising or falling edge of the selected TDC line."
         # TDC Edge
         tdc_edge_row = QHBoxLayout()
-        tdc_edge_label = QLabel("TDC Edge:")
+        tdc_edge_label = QLabel("TDC Edge")
         tdc_edge_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         tdc_edge_label.setToolTip(_tt_tdc_edge)
         tdc_edge_row.addWidget(tdc_edge_label)
@@ -319,7 +320,7 @@ class OperatorTab(QWidget):
 
         # Parse batch size (CLI --callback-batch-size): packets per vectorized parse_batch call
         batch_row = QHBoxLayout()
-        batch_label = QLabel("Parse batch (pkts):")
+        batch_label = QLabel("Parse batch (pkts)")
         batch_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         batch_label.setToolTip(
             "Target number of 12-byte packets per parse batch (vectorized parse_batch). "
@@ -338,7 +339,7 @@ class OperatorTab(QWidget):
 
         # n_bins
         n_bins_row = QHBoxLayout()
-        n_bins_label = QLabel("Time bins (n_bins):")
+        n_bins_label = QLabel("Time bins (n_bins)")
         n_bins_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         n_bins_label.setToolTip(
             "Number of time bins per TDC cycle. Used as the fallback when the streaming server "
@@ -360,7 +361,7 @@ class OperatorTab(QWidget):
         )
         # Duration
         dur_row = QHBoxLayout()
-        dur_label = QLabel("Duration (s):")
+        dur_label = QLabel("Duration (s)")
         dur_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         dur_label.setToolTip(_tt_duration)
         dur_row.addWidget(dur_label)
@@ -378,7 +379,7 @@ class OperatorTab(QWidget):
         )
         # Output directory
         out_row = QHBoxLayout()
-        out_label = QLabel("Output:")
+        out_label = QLabel("Output")
         out_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         out_label.setToolTip(_tt_output_label)
         out_row.addWidget(out_label)
@@ -420,7 +421,7 @@ class OperatorTab(QWidget):
         pipeline_group.setToolTip(
             "Live depth vs capacity. Packet buffer fills when the parse thread cannot keep up with TCP—"
             "try lowering Parse batch (pkts) or increasing buffer-size on the server. "
-            "ZMQ PUB (SUB): 3D flush depth (publisher); value in parentheses is the start/stop control queue."
+            "ZMQ PUB (SUB) shows 3D flush depth (publisher); value in parentheses is the start/stop control queue."
         )
         pipeline_layout = QVBoxLayout(pipeline_group)
         pipeline_layout.setSpacing(4)
@@ -428,13 +429,13 @@ class OperatorTab(QWidget):
         queue_rows = [
             (
                 "packet_buffer",
-                "Packet buffer:",
+                "Packet buffer",
                 "Queued raw TCP batches waiting for the parser thread (SocketDataServer message queue). "
                 "Fills if parsing lags behind the network reader.",
             ),
             (
                 "zmq_pub",
-                "ZMQ PUB (SUB):",
+                "ZMQ PUB (SUB)",
                 "3D flush queue (PUB path) and control queue depth in parentheses; "
                 "denominator is flush-queue capacity.",
             ),
@@ -462,12 +463,12 @@ class OperatorTab(QWidget):
 
         self._stats_labels = {}
         stat_names = [
-            ("pixel_rate", "Pixel Rate:"),
-            ("tdc1_rate", "TDC1 Rate:"),
-            ("tdc2_rate", "TDC2 Rate:"),
-            ("elapsed_remaining", "Elapsed / Remaining:"),
-            ("flushes_cycles", "Flushes (Cycles):"),
-            ("avg_counts", "Avg Counts/Cycle:"),
+            ("pixel_rate", "Pixel Rate"),
+            ("tdc1_rate", "TDC1 Rate"),
+            ("tdc2_rate", "TDC2 Rate"),
+            ("elapsed_remaining", "Elapsed / Remaining"),
+            ("flushes_cycles", "Flushes (Cycles)"),
+            ("avg_counts", "Avg Counts/Cycle"),
         ]
 
         for key, label in stat_names:
@@ -1001,14 +1002,27 @@ class OperatorTab(QWidget):
         else:
             self._stats_labels["avg_counts"].setText("--")
 
+    def _refresh_mode_buttons_state(self) -> None:
+        """Enable Start/Preview only when Serval has finished HW init; simulator/replay never need Serval."""
+        acquiring = self._acquiring
+        serval_ok = self._serval_process_running and self._serval_hw_ready
+        if acquiring:
+            self._start_btn.setEnabled(False)
+            self._preview_btn.setEnabled(False)
+            self._simulator_btn.setEnabled(False)
+            self._replay_btn.setEnabled(False)
+            self._stop_btn.setEnabled(True)
+        else:
+            self._stop_btn.setEnabled(False)
+            self._start_btn.setEnabled(serval_ok)
+            self._preview_btn.setEnabled(serval_ok)
+            self._simulator_btn.setEnabled(True)
+            self._replay_btn.setEnabled(True)
+
     @Slot(bool)
     def set_acquiring(self, acquiring: bool):
         self._acquiring = acquiring
-        self._start_btn.setEnabled(not acquiring)
-        self._preview_btn.setEnabled(not acquiring)
-        self._simulator_btn.setEnabled(not acquiring)
-        self._replay_btn.setEnabled(not acquiring)
-        self._stop_btn.setEnabled(acquiring)
+        self._refresh_mode_buttons_state()
         self._tdc_freq_input.setEnabled(not acquiring)
         self._tdc_ch_combo.setEnabled(not acquiring)
         self._tdc_edge_combo.setEnabled(not acquiring)
@@ -1094,6 +1108,7 @@ class OperatorTab(QWidget):
         self._serval_process_running = running
         self._serval_hw_ready = False
         self._update_serval_indicator()
+        self._refresh_mode_buttons_state()
 
     def on_serval_chip_temps_line_seen(self) -> None:
         """Called when Serval stdout contains the chip temperature line (startup complete)."""
@@ -1101,6 +1116,7 @@ class OperatorTab(QWidget):
             return
         self._serval_hw_ready = True
         self._update_serval_indicator()
+        self._refresh_mode_buttons_state()
 
     @Slot(object)
     def on_serval_status(self, status: ServalStatus):

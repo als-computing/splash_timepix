@@ -41,6 +41,7 @@ def _full_prefs_payload() -> dict:
         "alignment_binarize": False,
         "alignment_show_integrated": True,
         "alignment_show_crosshair": False,
+        "alignment_simulator": False,
     }
 
 
