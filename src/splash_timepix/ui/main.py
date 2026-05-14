@@ -486,6 +486,7 @@ class MainWindow(QMainWindow):
         if name == "serval":
             self._serval_stdout_tail = ""
             self._operator_tab.on_serval_process_running(True)
+            self._alignment_tab.on_serval_process_running(True)
 
     @Slot(str, int)
     def _on_process_stopped(self, name: str, exit_code: int):
@@ -495,6 +496,7 @@ class MainWindow(QMainWindow):
         self._engineering_tab.append_output(name, f"\n--- Process exited (code: {exit_code}) ---\n")
         if name == "serval":
             self._operator_tab.on_serval_process_running(False)
+            self._alignment_tab.on_serval_process_running(False)
 
         mode = getattr(self, "_current_mode", "start")
 
@@ -517,6 +519,7 @@ class MainWindow(QMainWindow):
             self._serval_stdout_tail = (self._serval_stdout_tail + text)[-8192:]
             if "chip temps:" in self._serval_stdout_tail.lower():
                 self._operator_tab.on_serval_chip_temps_line_seen()
+                self._alignment_tab.on_serval_chip_temps_line_seen()
 
     def _on_acquisition_complete(self):
         """Handle acquisition completion - save average data."""
