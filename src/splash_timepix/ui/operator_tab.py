@@ -1194,11 +1194,11 @@ class OperatorTab(QWidget):
 
     def save_average_data(
         self, output_dir: str, filename_base: str
-    ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path]]:
-        """Save the average heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, UUID, and metadata as JSON."""
+    ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path]]:
+        """Save the average heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, and metadata as JSON (includes scan_name)."""
         if self._cumulative_sum is None or self._total_cycles == 0:
             logger.warning("No data to save")
-            return None, None, None, None, None, None
+            return None, None, None, None, None
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -1209,18 +1209,10 @@ class OperatorTab(QWidget):
         else:
             avg_2d = np.sum(average, axis=1)
 
-        # Save UUID — use the scan_name from ZMQ metadata so it matches what the
-        # streaming server already broadcast to downstream services.  Fall back to
-        # a fresh UUID4 if metadata isn't available (e.g. simulator without ZMQ).
+        # Use scan_name from ZMQ metadata so it matches what the streaming server
+        # broadcast; fall back to a fresh UUID4 when metadata isn't available.
         meta_for_uuid = self._last_metadata or {}
         scan_uuid = meta_for_uuid.get("scan_name") or str(uuid.uuid4())
-        uuid_path = output_path / f"{filename_base}_uuid.txt"
-        try:
-            uuid_path.write_text(scan_uuid)
-            logger.info(f"Saved UUID: {uuid_path} ({scan_uuid})")
-        except Exception as e:
-            logger.error(f"Failed to save UUID: {e}")
-            uuid_path = None
 
         # Save average CSV
         csv_path = output_path / f"{filename_base}_avg.csv"
@@ -1294,6 +1286,7 @@ class OperatorTab(QWidget):
         json_path = output_path / f"{filename_base}_meta.json"
         try:
             meta = {
+                "scan_name": scan_uuid,
                 "total_flushes": self._flush_count,
                 "total_cycles": self._total_cycles,
                 "total_counts": float(np.sum(self._cumulative_sum)),
@@ -1311,4 +1304,4 @@ class OperatorTab(QWidget):
             logger.error(f"Failed to save JSON: {e}")
             json_path = None
 
-        return png_path, csv_path, energy_path, time_path, uuid_path, json_path
+        return png_path, csv_path, energy_path, time_path, json_path
