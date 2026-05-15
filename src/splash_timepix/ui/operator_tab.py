@@ -1195,7 +1195,7 @@ class OperatorTab(QWidget):
     def save_average_data(
         self, output_dir: str, filename_base: str
     ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path]]:
-        """Save the average heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, and metadata as JSON (includes scan_name)."""
+        """Save heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, metadata JSON (incl. scan_name)."""
         if self._cumulative_sum is None or self._total_cycles == 0:
             logger.warning("No data to save")
             return None, None, None, None, None

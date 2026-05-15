@@ -10,18 +10,27 @@ from .widgets import TerminalWidget
 
 logger = logging.getLogger(__name__)
 
-# Map QProcess names to terminal keys (simulator shares the source panel with live-cli).
-_PROCESS_TO_TERMINAL = {
+# Map QProcess / LogManager source keys → terminal widget keys.
+# simulator shares the source panel with live-cli (mirrors the merged UI panel).
+_SOURCE_TO_TERMINAL = {
     "simulator": "live-cli",
+    "zmq-backend": "zmq-backend",
+    "system": "system",
+    "serval": "serval",
+    "streaming": "streaming",
+    "live-cli": "live-cli",
+    "acquisition": "acquisition",
 }
 
 
 class EngineeringTab(QWidget):
-    """Engineering interface tab with 2x3 terminal grid.
+    """Logs tab — 2×3 grid of per-subsystem terminal panels.
 
     Layout:
-        [Serval]      [Streaming]   [live-cli]
+        [Serval]      [Streaming]   [live-cli / simulator]
         [Acquisition] [ZMQ Backend] [System Logs]
+
+    The merged "All Logs (Integrated)" view lives in the separate Timeline tab.
     """
 
     kill_all_requested = Signal()
@@ -93,24 +102,21 @@ class EngineeringTab(QWidget):
             terminal.clear()
         self.clear_logs_requested.emit()
 
-    def _terminal_key(self, process_name: str) -> str:
-        return _PROCESS_TO_TERMINAL.get(process_name, process_name)
+    def _terminal_key(self, source: str) -> str:
+        return _SOURCE_TO_TERMINAL.get(source, source)
 
     @Slot(str, str)
-    def append_output(self, process_name: str, text: str):
-        key = self._terminal_key(process_name)
-        if key in self._terminals:
-            self._terminals[key].append_text(text)
-        else:
-            self._terminals["system"].append_text(f"[{process_name}] {text}")
+    def on_log_line(self, source: str, formatted_line: str) -> None:
+        """Receive a pre-formatted line from LogManager and route it.
 
-    @Slot(str)
-    def append_system_log(self, text: str):
-        self._terminals["system"].append_text(text)
-
-    @Slot(str)
-    def append_zmq_log(self, text: str):
-        self._terminals["zmq-backend"].append_text(text)
+        ``formatted_line`` already contains the ISO timestamp and source tag —
+        it is written verbatim to the per-source terminal widget and to the
+        integrated "All Logs" view.  No additional timestamp prefix is added
+        by TerminalWidget (see widgets.py).
+        """
+        key = self._terminal_key(source)
+        target = self._terminals.get(key, self._terminals["system"])
+        target.append_text(formatted_line)
 
     @Slot(str, bool)
     def set_process_status(self, process_name: str, running: bool):
@@ -140,6 +146,6 @@ class EngineeringTab(QWidget):
             self._status_label.setText("No processes running")
             self._status_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
 
-    def clear_terminal(self, process_name: str):
-        if process_name in self._terminals:
-            self._terminals[process_name].clear()
+    def clear_terminal(self, source: str):
+        if source in self._terminals:
+            self._terminals[source].clear()
