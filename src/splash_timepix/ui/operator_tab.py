@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -1194,11 +1195,16 @@ class OperatorTab(QWidget):
 
     def save_average_data(
         self, output_dir: str, filename_base: str
-    ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path]]:
-        """Save heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, metadata JSON (incl. scan_name)."""
+    ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path], str]:
+        """Save heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, metadata JSON (incl. scan_name).
+
+        Returns (png_path, csv_path, energy_path, time_path, json_path, slug) where slug is
+        ``{uuid_short}_{local_timestamp}`` and is shared by all six output files including the
+        renamed .tpx3 source file.
+        """
         if self._cumulative_sum is None or self._total_cycles == 0:
             logger.warning("No data to save")
-            return None, None, None, None, None
+            return None, None, None, None, None, ""
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -1213,9 +1219,12 @@ class OperatorTab(QWidget):
         # broadcast; fall back to a fresh UUID4 when metadata isn't available.
         meta_for_uuid = self._last_metadata or {}
         scan_uuid = meta_for_uuid.get("scan_name") or str(uuid.uuid4())
+        scan_uuid_short = scan_uuid.replace("-", "")[:8]
+        save_ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        slug = f"{scan_uuid_short}_{save_ts}"
 
         # Save average CSV
-        csv_path = output_path / f"{filename_base}_avg.csv"
+        csv_path = output_path / f"{filename_base}_{slug}_avg.csv"
         try:
             np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
             logger.info("Saved CSV: %s (scan: %s)", csv_path, scan_uuid)
@@ -1224,7 +1233,7 @@ class OperatorTab(QWidget):
             csv_path = None
 
         # Save energy-axis CSV (one eV value per x-pixel)
-        energy_path = output_path / f"{filename_base}_energy.csv"
+        energy_path = output_path / f"{filename_base}_{slug}_energy.csv"
         try:
             n_x = avg_2d.shape[0]
             pixel_per_ev = self._pixel_per_ev.value()
@@ -1239,7 +1248,7 @@ class OperatorTab(QWidget):
         # Save time-axis CSV (one ns value per time bin)
         # t_delta_ns comes from the ZMQ metadata published by app.py; it is
         # 1 / (tdc_frequency_hz * n_bins) * 1e9 and is the width of one time bin.
-        time_path = output_path / f"{filename_base}_time_ns.csv"
+        time_path = output_path / f"{filename_base}_{slug}_time.csv"
         try:
             n_t = avg_2d.shape[1]
             meta = self._last_metadata or {}
@@ -1261,7 +1270,7 @@ class OperatorTab(QWidget):
             time_path = None
 
         # Save PNG
-        png_path = output_path / f"{filename_base}_avg.png"
+        png_path = output_path / f"{filename_base}_{slug}_avg.png"
         try:
             display_data = np.flipud(avg_2d.T.astype(np.float32))
             vmin, vmax = display_data.min(), display_data.max()
@@ -1283,7 +1292,7 @@ class OperatorTab(QWidget):
             png_path = None
 
         # Save JSON metadata
-        json_path = output_path / f"{filename_base}_meta.json"
+        json_path = output_path / f"{filename_base}_{slug}_meta.json"
         try:
             meta = {
                 "scan_name": scan_uuid,
@@ -1304,4 +1313,4 @@ class OperatorTab(QWidget):
             logger.error(f"Failed to save JSON: {e}")
             json_path = None
 
-        return png_path, csv_path, energy_path, time_path, json_path
+        return png_path, csv_path, energy_path, time_path, json_path, slug
