@@ -196,7 +196,7 @@ def main(
     heartbeat.set_queue_stats_provider(_queue_stats_for_heartbeat)
 
     # UUID for the current acquisition.
-    # Full UUID4 (36 chars) so it matches the _uuid.txt written by the UI at save time.
+    # Full UUID4 (36 chars) so it matches scan_name in the UI's *_meta.json at save time.
     # Single source of truth: generated exclusively in the client-connect block below.
     def generate_scan_name():
         return str(uuid.uuid4())

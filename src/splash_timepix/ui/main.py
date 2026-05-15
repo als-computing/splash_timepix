@@ -419,7 +419,7 @@ class MainWindow(QMainWindow):
 
         self._engineering_tab.append_system_log(f"Saving to {output_dir} as {filename_base}...")
 
-        png_path, csv_path, energy_path, time_path, uuid_path, json_path = self._operator_tab.save_average_data(
+        png_path, csv_path, energy_path, time_path, json_path = self._operator_tab.save_average_data(
             output_dir, filename_base
         )
 
@@ -431,11 +431,9 @@ class MainWindow(QMainWindow):
             self._engineering_tab.append_system_log(f"Saved: {energy_path}")
         if time_path:
             self._engineering_tab.append_system_log(f"Saved: {time_path}")
-        if uuid_path:
-            self._engineering_tab.append_system_log(f"Saved: {uuid_path}")
         if json_path:
             self._engineering_tab.append_system_log(f"Saved: {json_path}")
-        if not any([png_path, csv_path, energy_path, time_path, uuid_path, json_path]):
+        if not any([png_path, csv_path, energy_path, time_path, json_path]):
             self._engineering_tab.append_system_log("No data to save")
 
     def _force_stop_streaming_if_still_running(self):
