@@ -131,14 +131,15 @@ class LogManager(QObject):
         if not stripped:
             return
 
-        lines = stripped.split("\n")
+        lines = [ln for ln in stripped.split("\n") if ln.strip()]
+        if not lines:
+            return
+
         stem = _SOURCE_TO_FILE.get(source, source)
 
         with self._lock:
             self._ensure_today_open()
             for line in lines:
-                if not line.strip():  # skip blank / whitespace-only lines
-                    continue
                 formatted = _format_line(source, line)
                 self._write_line(stem, formatted)
                 # Emit outside the lock would be safer for Qt but the signal
@@ -298,6 +299,11 @@ class _QtLoggingHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(self._in_emit, "active", False):
+            return
+        # INFO/DEBUG from this package are operational chatter (e.g. "Log file
+        # opened" after append).  Routing them back into LogManager pollutes
+        # per-source logs and breaks line-count tests; WARNING+ still surface.
+        if record.name == __name__ and record.levelno < logging.WARNING:
             return
         self._in_emit.active = True
         try:

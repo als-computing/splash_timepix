@@ -586,7 +586,7 @@ def main(
             logger.info(f"Flushed: #{flush_number}, cycles={cycles_in_flush}")
             return True
         except queue.Full:
-            logger.warning("Processing queue full, dropping array")
+            logger.warning("Processing queue full, dropping array (scan=%s)", scan_name)
             return False
 
     def _wait_for_xyt_drain(timeout: float = 30.0) -> None:
@@ -601,7 +601,10 @@ def main(
         while not xyt_queue.empty() and time.time() < deadline:
             time.sleep(0.05)
         if not xyt_queue.empty():
-            logger.warning(f"xyt_queue not drained after {timeout}s; stop message may arrive before remaining flushes")
+            logger.warning(
+                "xyt_queue not drained after %.1fs (scan=%s); stop message may arrive before remaining flushes",
+                timeout, scan_name,
+            )
 
     def do_final_flush() -> None:
         """Flush any data remaining in the accumulator before sending a stop message.
@@ -644,9 +647,9 @@ def main(
         }
         try:
             xyt_queue.put_nowait((array_copy, flush_metadata))
-            logger.info(f"Final flush #{flush_count}: {partial_cycles} partial cycles flushed before stop")
+            logger.info("Final flush #%d: %d partial cycles flushed before stop (scan=%s)", flush_count, partial_cycles, scan_name)
         except queue.Full:
-            logger.warning("Processing queue full, dropping final flush")
+            logger.warning("Processing queue full, dropping final flush (scan=%s)", scan_name)
 
     # =========================================================================
     # Alignment-mode parallels to data_callback / emit_flush_if_due / do_final_flush.
@@ -860,7 +863,7 @@ def main(
         while server.running:
             # Check if we should exit due to client disconnect
             if exit_on_disconnect and server.client_disconnected_event.is_set():
-                logger.info("Client disconnected, initiating shutdown...")
+                logger.info("Client disconnected, initiating shutdown (scan=%s)...", scan_name)
                 # Send stop message before shutdown
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
                     # Drain any TDC/pixel batches still sitting in
@@ -956,7 +959,8 @@ def main(
                     try:
                         message_queue.put_nowait(start_msg.model_dump())
                         start_message_sent = True
-                        logger.info(f"Queued start message on connect for scan: {scan_name}")
+                        logger.info("Queued start message on connect for scan: %s", scan_name)
+                        logger.info("Acquisition session started: %s", start_msg.model_dump())
                         print(f"Queued start message on connect for scan: {scan_name}")
                     except queue.Full:
                         logger.warning("Message queue full, dropping start message on connect")
@@ -992,6 +996,14 @@ def main(
                         stop_message_sent_on_disconnect = True
                     except queue.Full:
                         logger.warning("Message queue full, dropping stop message")
+                    # ``do_final_flush`` does not clear the wall-clock gate.  If we leave
+                    # ``last_flush_time`` / ``cycles_since_last_flush`` armed, the main-loop
+                    # watchdog ``_emit_flush()`` in this same iteration can enqueue another
+                    # flush *after* the stop.  The ZMQ worker prioritizes control messages, so
+                    # subscribers see stop then a stale event (previous scan_name), which
+                    # breaks strict per-run tests and can violate cycle conservation.
+                    last_flush_time = None
+                    cycles_since_last_flush = 0
 
             time.sleep(main_loop_sleep_s)
             current_time = time.time()

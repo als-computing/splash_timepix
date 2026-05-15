@@ -423,7 +423,10 @@ def zmq_worker(
                     )
 
                 except zmq.Again:
-                    logger.warning("ZMQ send would block (no subscribers or slow subscribers), dropping flush")
+                    logger.warning(
+                        "ZMQ send would block, dropping flush (scan=%s)",
+                        flush_metadata.get("scan_name", "?"),
+                    )
 
                 xyt_queue.task_done()
 

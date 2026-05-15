@@ -1218,7 +1218,7 @@ class OperatorTab(QWidget):
         csv_path = output_path / f"{filename_base}_avg.csv"
         try:
             np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
-            logger.info(f"Saved CSV: {csv_path}")
+            logger.info("Saved CSV: %s (scan: %s)", csv_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save CSV: {e}")
             csv_path = None
@@ -1231,7 +1231,7 @@ class OperatorTab(QWidget):
             ev_at_mid = self._ev_at_mid.value()
             energy_axis = ev_at_mid + (np.arange(n_x) - n_x / 2) / pixel_per_ev
             np.savetxt(energy_path, energy_axis, delimiter=",", fmt="%.6f")
-            logger.info(f"Saved energy axis CSV: {energy_path}")
+            logger.info("Saved energy axis CSV: %s (scan: %s)", energy_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save energy axis CSV: {e}")
             energy_path = None
@@ -1255,7 +1255,7 @@ class OperatorTab(QWidget):
                     logger.warning("t_delta_ns not in metadata; time axis will be bin-index units (1 ns/bin assumed)")
             time_axis = np.arange(n_t) * t_delta_ns
             np.savetxt(time_path, time_axis, delimiter=",", fmt="%.6f")
-            logger.info(f"Saved time axis CSV: {time_path}")
+            logger.info("Saved time axis CSV: %s (scan: %s)", time_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save time axis CSV: {e}")
             time_path = None
@@ -1277,7 +1277,7 @@ class OperatorTab(QWidget):
             h, w = rgb.shape[:2]
             qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
             qimg.save(str(png_path))
-            logger.info(f"Saved PNG: {png_path}")
+            logger.info("Saved PNG: %s (scan: %s)", png_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save PNG: {e}")
             png_path = None
@@ -1299,7 +1299,7 @@ class OperatorTab(QWidget):
 
             with open(json_path, "w") as f:
                 json.dump(meta, f, indent=2)
-            logger.info(f"Saved JSON: {json_path}")
+            logger.info("Saved JSON: %s (scan: %s)", json_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save JSON: {e}")
             json_path = None
