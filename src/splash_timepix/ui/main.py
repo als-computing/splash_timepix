@@ -19,7 +19,9 @@ from splash_timepix.serval_client import ServalClient
 from . import single_instance, theme
 from .alignment_tab import AlignmentTab
 from .engineering_tab import EngineeringTab
+from .log_manager import LogManager
 from .operator_tab import OperatorTab
+from .timeline_tab import TimelineTab
 from .workers import (
     FlushData,
     HeartbeatMonitorWorker,
@@ -58,6 +60,8 @@ class MainWindow(QMainWindow):
         self._waiting_for_streaming_ready = False
         self._serval_stdout_tail = ""
 
+        self._log_manager = LogManager(self)
+
         self._setup_ui()
         self._setup_workers()
         if autostart_serval:
@@ -88,11 +92,16 @@ class MainWindow(QMainWindow):
         self._operator_tab.stop_requested.connect(self._on_stop_requested)
         self._operator_idx = self._tabs.addTab(self._operator_tab, "Operator")
 
-        # Engineering tab — viewing diagnostics during a live alignment run is
-        # explicitly allowed, so this tab does NOT trigger an auto-stop.
+        # Logs tab (formerly Engineering) — viewing diagnostics during a live
+        # alignment run is explicitly allowed; this tab does NOT trigger auto-stop.
         self._engineering_tab = EngineeringTab()
         self._engineering_tab.kill_all_requested.connect(self._on_kill_all)
-        self._engineering_idx = self._tabs.addTab(self._engineering_tab, "Engineering")
+        self._engineering_tab.clear_logs_requested.connect(self._log_manager.session_marker)
+        self._engineering_idx = self._tabs.addTab(self._engineering_tab, "Logs")
+
+        # Timeline tab — integrated, time-ordered view of all subsystem logs.
+        self._timeline_tab = TimelineTab()
+        self._timeline_idx = self._tabs.addTab(self._timeline_tab, "Timeline")
 
         # Auto-stop alignment on Operator-tab entry. See _on_tab_changed.
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -110,7 +119,13 @@ class MainWindow(QMainWindow):
         self._process_manager = ProcessManager(self)
         self._process_manager.process_started.connect(self._on_process_started)
         self._process_manager.process_stopped.connect(self._on_process_stopped)
+        # Persist to disk first, then handle Serval tail / UI via line_emitted.
+        self._process_manager.process_output.connect(self._log_manager.append)
         self._process_manager.process_output.connect(self._on_process_output)
+        self._log_manager.line_emitted.connect(self._engineering_tab.on_log_line)
+        self._log_manager.line_emitted.connect(self._timeline_tab.on_log_line)
+        # Clear the Timeline view together with the Logs tab terminals.
+        self._engineering_tab.clear_logs_requested.connect(self._timeline_tab.clear)
 
         # Serval poller (always runs)
         self._serval_worker = ServalPollerWorker(poll_interval=1.0)
@@ -134,7 +149,7 @@ class MainWindow(QMainWindow):
         self._zmq_worker.error_occurred.connect(self._on_zmq_error)
         self._zmq_worker.start()
         self._engineering_tab.set_zmq_thread_status("running")
-        self._engineering_tab.append_zmq_log("ZMQ subscriber thread started.")
+        self._log_manager.append("zmq-backend", "ZMQ subscriber thread started.")
 
     def _start_serval(self):
         """Start Serval server on application startup."""
@@ -144,12 +159,12 @@ class MainWindow(QMainWindow):
             return
 
         logger.info("Starting Serval server...")
-        self._engineering_tab.append_system_log("Starting Serval server...")
+        self._log_manager.append("system", "Starting Serval server...")
 
         if self._process_manager.start_serval():
             self._status_bar.showMessage("Starting Serval server...")
         else:
-            self._engineering_tab.append_system_log("WARNING: Failed to start Serval - check if JAR exists")
+            self._log_manager.append("system", "WARNING: Failed to start Serval - check if JAR exists")
             QMessageBox.warning(
                 self,
                 "Serval Error",
@@ -217,8 +232,9 @@ class MainWindow(QMainWindow):
             f"Starting {mode}: TDC={tdc_freq}Hz, ch={tdc_channel}, edge={tdc_edge}, "
             f"callback_batch_size={callback_batch_size}, duration={duration}s"
         )
-        self._engineering_tab.append_system_log(
-            f"Starting {mode}: TDC={tdc_freq}Hz, parse_batch={callback_batch_size}, duration={duration}s"
+        self._log_manager.append(
+            "system",
+            f"Starting {mode}: TDC={tdc_freq}Hz, parse_batch={callback_batch_size}, duration={duration}s",
         )
 
         # Start streaming server (needed for all modes; alignment passes extra flags).
@@ -267,7 +283,7 @@ class MainWindow(QMainWindow):
         elif self._ready_check_count > 60:  # 30 second timeout
             self._waiting_for_streaming_ready = False
             self._stop_ready_check_timer()
-            self._engineering_tab.append_system_log("WARNING: Timeout waiting for server ready")
+            self._log_manager.append("system", "WARNING: Timeout waiting for server ready")
             QMessageBox.warning(self, "Timeout", "Streaming server did not become ready in time")
             self._process_manager.stop_process("streaming")
 
@@ -275,11 +291,11 @@ class MainWindow(QMainWindow):
         """Continue startup sequence after server is ready."""
         mode, params = self._start_params
 
-        self._engineering_tab.append_system_log("Streaming server ready")
+        self._log_manager.append("system", "Streaming server ready")
 
         if mode == "simulator":
             # Simulator mode: start simulator CLI (no Serval needed)
-            self._engineering_tab.append_system_log("Starting simulator...")
+            self._log_manager.append("system", "Starting simulator...")
             self._status_bar.showMessage("Starting simulator...")
 
             if not self._process_manager.start_simulator(
@@ -298,7 +314,7 @@ class MainWindow(QMainWindow):
         elif mode == "replay":
             # Replay mode: start live-cli with source file (no Serval needed)
             replay_file = params.get("replay_file", "")
-            self._engineering_tab.append_system_log(f"Starting replay: {Path(replay_file).name}")
+            self._log_manager.append("system", f"Starting replay: {Path(replay_file).name}")
             self._status_bar.showMessage("Replaying file...")
 
             if not self._process_manager.start_live_cli(replay_file=replay_file):
@@ -317,7 +333,7 @@ class MainWindow(QMainWindow):
             # without it the detector pushes nothing through live-cli.  Output
             # dir is unused in --preview mode but acq.py expects the flag, so
             # pass an empty directory placeholder via the duration-only path.
-            self._engineering_tab.append_system_log("Starting alignment live-cli...")
+            self._log_manager.append("system", "Starting alignment live-cli...")
             self._status_bar.showMessage("Starting live-cli (alignment)...")
             QTimer.singleShot(
                 1000,
@@ -326,7 +342,7 @@ class MainWindow(QMainWindow):
 
         else:
             # Start/Preview mode: need live-cli and acquisition
-            self._engineering_tab.append_system_log("Starting live-cli...")
+            self._log_manager.append("system", "Starting live-cli...")
             self._status_bar.showMessage("Starting live-cli...")
             QTimer.singleShot(
                 1000,
@@ -346,7 +362,7 @@ class MainWindow(QMainWindow):
 
     def _start_acquisition(self, duration: int, output_dir: str, preview: bool):
         """Start the acquisition script."""
-        self._engineering_tab.append_system_log("Starting acquisition...")
+        self._log_manager.append("system", "Starting acquisition...")
         self._status_bar.showMessage("Acquiring..." if not preview else "Preview mode...")
 
         if not self._process_manager.start_acquisition(duration, output_dir, preview):
@@ -365,7 +381,7 @@ class MainWindow(QMainWindow):
             return
 
         logger.info("Stop requested")
-        self._engineering_tab.append_system_log("Stop requested...")
+        self._log_manager.append("system", "Stop requested...")
         self._status_bar.showMessage("Stopping...")
 
         mode = getattr(self, "_current_mode", "start")
@@ -381,7 +397,7 @@ class MainWindow(QMainWindow):
             # message, and exit on its own.  _on_acquisition_complete() fires
             # when the "streaming" process exits (see _on_process_stopped).
             proc_name = "simulator" if mode == "simulator" else "live-cli"
-            self._engineering_tab.append_system_log(f"Stopping {proc_name}...")
+            self._log_manager.append("system", f"Stopping {proc_name}...")
             self._process_manager.stop_process(proc_name)
             self._status_bar.showMessage("Waiting for streaming server to finish...")
             # Safety net: force-kill streaming after 6 s if it has not exited.
@@ -401,7 +417,7 @@ class MainWindow(QMainWindow):
             output_dir = self._current_output_dir
             if not output_dir:
                 output_dir = str(Path.home() / "Desktop")
-                self._engineering_tab.append_system_log(f"No output dir set, using {output_dir}")
+                self._log_manager.append("system", f"No output dir set, using {output_dir}")
 
             # Find the newest/latest .tpx3 file in the output directory
             output_path = Path(output_dir)
@@ -410,31 +426,29 @@ class MainWindow(QMainWindow):
             if tpx3_files:
                 newest_tpx3 = max(tpx3_files, key=lambda f: f.stat().st_mtime)
                 filename_base = newest_tpx3.stem
-                self._engineering_tab.append_system_log(f"Found newest tpx3: {newest_tpx3}")
+                self._log_manager.append("system", f"Found newest tpx3: {newest_tpx3}")
             else:
-                self._engineering_tab.append_system_log(
-                    "WARNING: No .tpx3 files found in output directory, skipping save"
-                )
+                self._log_manager.append("system", "WARNING: No .tpx3 files found in output directory, skipping save")
                 return
 
-        self._engineering_tab.append_system_log(f"Saving to {output_dir} as {filename_base}...")
+        self._log_manager.append("system", f"Saving to {output_dir} as {filename_base}...")
 
         png_path, csv_path, energy_path, time_path, json_path = self._operator_tab.save_average_data(
             output_dir, filename_base
         )
 
         if png_path:
-            self._engineering_tab.append_system_log(f"Saved: {png_path}")
+            self._log_manager.append("system", f"Saved: {png_path}")
         if csv_path:
-            self._engineering_tab.append_system_log(f"Saved: {csv_path}")
+            self._log_manager.append("system", f"Saved: {csv_path}")
         if energy_path:
-            self._engineering_tab.append_system_log(f"Saved: {energy_path}")
+            self._log_manager.append("system", f"Saved: {energy_path}")
         if time_path:
-            self._engineering_tab.append_system_log(f"Saved: {time_path}")
+            self._log_manager.append("system", f"Saved: {time_path}")
         if json_path:
-            self._engineering_tab.append_system_log(f"Saved: {json_path}")
+            self._log_manager.append("system", f"Saved: {json_path}")
         if not any([png_path, csv_path, energy_path, time_path, json_path]):
-            self._engineering_tab.append_system_log("No data to save")
+            self._log_manager.append("system", "No data to save")
 
     def _force_stop_streaming_if_still_running(self):
         """Safety net: force-kill streaming server if it has not exited on its own.
@@ -445,8 +459,8 @@ class MainWindow(QMainWindow):
         """
         if self._process_manager.is_running("streaming"):
             logger.warning("Streaming server still running after timeout, force stopping")
-            self._engineering_tab.append_system_log(
-                "WARNING: Streaming server did not exit after disconnect, force stopping..."
+            self._log_manager.append(
+                "system", "WARNING: Streaming server did not exit after disconnect, force stopping..."
             )
             self._process_manager.stop_process("streaming")
             # _on_process_stopped("streaming") will fire and call _on_acquisition_complete.
@@ -456,16 +470,16 @@ class MainWindow(QMainWindow):
         try:
             client = ServalClient()
             client.stop_acquisition()
-            self._engineering_tab.append_system_log("Stop command sent successfully")
+            self._log_manager.append("system", "Stop command sent successfully")
         except Exception as e:
-            self._engineering_tab.append_system_log(f"Stop failed: {e}, killing processes...")
+            self._log_manager.append("system", f"Stop failed: {e}, killing processes...")
             self._process_manager.stop_all()
 
     @Slot()
     def _on_kill_all(self):
         """Handle kill all request from engineering tab."""
         logger.info("Killing all processes")
-        self._engineering_tab.append_system_log("Killing all processes...")
+        self._log_manager.append("system", "Killing all processes...")
         self._waiting_for_streaming_ready = False
         self._stop_ready_check_timer()
         self._process_manager.stop_all()
@@ -480,7 +494,7 @@ class MainWindow(QMainWindow):
         """Handle process started signal."""
         logger.info(f"Process started: {name}")
         self._engineering_tab.set_process_status(name, True)
-        self._engineering_tab.append_output(name, "--- Process started ---\n")
+        self._log_manager.append(name, "--- Process started ---")
         if name == "serval":
             self._serval_stdout_tail = ""
             self._operator_tab.on_serval_process_running(True)
@@ -491,7 +505,7 @@ class MainWindow(QMainWindow):
         """Handle process stopped signal."""
         logger.info(f"Process stopped: {name} (exit code: {exit_code})")
         self._engineering_tab.set_process_status(name, False)
-        self._engineering_tab.append_output(name, f"\n--- Process exited (code: {exit_code}) ---\n")
+        self._log_manager.append(name, f"--- Process exited (code: {exit_code}) ---")
         if name == "serval":
             self._operator_tab.on_serval_process_running(False)
             self._alignment_tab.on_serval_process_running(False)
@@ -511,8 +525,11 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str)
     def _on_process_output(self, name: str, text: str):
-        """Handle process output signal."""
-        self._engineering_tab.append_output(name, text)
+        """Maintain Serval stdout tail for chip-temp detection.
+
+        Persistence and UI rendering are handled upstream by LogManager
+        (connected to the same process_output signal before this slot).
+        """
         if name == "serval":
             self._serval_stdout_tail = (self._serval_stdout_tail + text)[-8192:]
             if "chip temps:" in self._serval_stdout_tail.lower():
@@ -529,14 +546,14 @@ class MainWindow(QMainWindow):
 
         if mode in ("preview", "simulator", "replay", "alignment"):
             self._status_bar.showMessage(f"{mode.capitalize()} complete")
-            self._engineering_tab.append_system_log(f"{mode.capitalize()} complete")
+            self._log_manager.append("system", f"{mode.capitalize()} complete")
             return
 
         # Save average data for real acquisitions
         self._save_on_stop(mode)
 
         self._status_bar.showMessage("Acquisition complete")
-        self._engineering_tab.append_system_log("Acquisition complete")
+        self._log_manager.append("system", "Acquisition complete")
 
     @Slot(object)
     def _on_flush_received(self, flush_data: FlushData):
@@ -560,8 +577,9 @@ class MainWindow(QMainWindow):
         # Log to engineering tab
         flush_num = meta.get("flush_number", "?")
         cycles = meta.get("cycles_in_flush", "?")
-        self._engineering_tab.append_zmq_log(
-            f"[{mode}] Flush #{flush_num}: {cycles} cycles, {np.sum(flush_data.array):.2e} counts"
+        self._log_manager.append(
+            "zmq-backend",
+            f"[{mode}] Flush #{flush_num}: {cycles} cycles, {np.sum(flush_data.array):.2e} counts",
         )
 
     @Slot(int)
@@ -580,7 +598,7 @@ class MainWindow(QMainWindow):
             return
         msg = "Alignment auto-stopped: switched to Operator"
         logger.info(msg)
-        self._engineering_tab.append_system_log(msg)
+        self._log_manager.append("system", msg)
         self._status_bar.showMessage(msg)
         self._on_stop_requested()
 
@@ -588,23 +606,23 @@ class MainWindow(QMainWindow):
     def _on_zmq_connection_changed(self, connected: bool):
         """Handle ZMQ connection state change for engineering tab."""
         if connected:
-            self._engineering_tab.append_zmq_log("Receiving data from streaming server")
+            self._log_manager.append("zmq-backend", "Receiving data from streaming server")
         else:
-            self._engineering_tab.append_zmq_log("Not receiving data")
+            self._log_manager.append("zmq-backend", "Not receiving data")
 
     @Slot(bool)
     def _on_serval_connection_changed(self, connected: bool):
         """Handle Serval connection state change."""
         if connected:
-            self._engineering_tab.append_system_log("Connected to Serval")
+            self._log_manager.append("system", "Connected to Serval")
         else:
-            self._engineering_tab.append_system_log("Disconnected from Serval")
+            self._log_manager.append("system", "Disconnected from Serval")
 
     @Slot(bool)
     def _on_heartbeat_connection_changed(self, connected: bool):
         """Handle heartbeat connection state change."""
         if connected:
-            self._engineering_tab.append_system_log("Heartbeat connected")
+            self._log_manager.append("system", "Heartbeat connected")
 
     @Slot(object)
     def _on_heartbeat_status_for_state(self, status: HeartbeatStatus):
@@ -614,7 +632,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_zmq_error(self, error: str):
         """Handle ZMQ error."""
-        self._engineering_tab.append_zmq_log(f"Error: {error}")
+        self._log_manager.append("zmq-backend", f"Error: {error}")
 
     def closeEvent(self, event):
         """Handle window close - cleanup workers and processes."""
@@ -673,6 +691,7 @@ class MainWindow(QMainWindow):
         if self._process_manager:
             self._process_manager.stop_all()
 
+        self._log_manager.close()
         event.accept()
 
 

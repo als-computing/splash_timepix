@@ -1,7 +1,6 @@
 """Custom widgets for the TimePix3 UI."""
 
 import logging
-from datetime import datetime
 from functools import lru_cache
 from typing import Optional
 
@@ -1159,12 +1158,18 @@ class TerminalWidget(QWidget):
         layout.addWidget(self._output)
 
     def append_text(self, text: str):
+        """Append ``text`` to the terminal.
+
+        Lines arriving here are expected to be pre-formatted by ``LogManager``
+        (ISO-8601 timestamp + source tag already present).  The method accepts
+        multi-line text and skips blank lines, but adds no extra timestamp.
+        """
         stripped = text.rstrip("\n")
         if not stripped:
             return
         for line in stripped.split("\n"):
-            ts = datetime.now().strftime("%H:%M:%S")
-            self._output.appendPlainText(f"[{ts}] {line}")
+            if line:
+                self._output.appendPlainText(line)
         scrollbar = self._output.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
