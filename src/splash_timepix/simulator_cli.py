@@ -6,12 +6,15 @@ to test the socket server functionality.
 """
 
 import datetime
+import logging
 import socket
 import threading
 import time
 from typing import Optional
 
 import typer
+
+logger = logging.getLogger(__name__)
 
 from splash_timepix.parser import PacketParser
 from splash_timepix.simulator import PacketSimulator, PacketType, SimulatorConfig
@@ -94,10 +97,10 @@ class SimulatorSource:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
-            print(f"Connected to server at {self.host}:{self.port}")
+            logger.info("Connected to server at %s:%d", self.host, self.port)
             return True
         except Exception as e:
-            print(f"Failed to connect to server: {e}")
+            logger.error("Failed to connect to server at %s:%d: %s", self.host, self.port, e)
             return False
 
     def disconnect(self) -> None:
@@ -105,7 +108,7 @@ class SimulatorSource:
         if self.socket:
             self.socket.close()
             self.socket = None
-            print("Disconnected from server")
+            logger.info("Disconnected from server")
 
     def start_auto_sending(self, duration: float) -> None:
         """
@@ -129,7 +132,12 @@ class SimulatorSource:
         self.running = True
         self.send_thread = threading.Thread(target=self._auto_send_worker, args=(duration,), daemon=True)
         self.send_thread.start()
-        print(f"Started auto-sending messages for {duration} seconds")
+        logger.info(
+            "Auto-sending started: cps=%g, tdc_frequency=%g Hz, duration=%gs",
+            self.pixel_count_rate,
+            self.tdc_frequency,
+            duration,
+        )
         dt = datetime.datetime.fromtimestamp(time.time())
         formatted = dt.strftime("%Y-%m-%d %H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
         print(f"Current time: {formatted}")
@@ -221,7 +229,7 @@ class SimulatorSource:
                         elif parsed and parsed.packet_type == PacketType.CONTROL:
                             sent_count_ctrl += 1
                 except Exception as e:
-                    print(f"Failed to send simulated packet: {e}")
+                    logger.error("Failed to send simulated packet: %s", e)
                     break
         finally:
             # Drain residual bytes so the server sees the tail of the
@@ -234,12 +242,14 @@ class SimulatorSource:
                     print(f"Failed to flush final TCP batch: {e}")
 
         self.running = False
-        print("Auto-sending finished.")
+        logger.info("Auto-sending finished.")
         if self.counting:
-            print("Sent events during last session:")
-            print(f"  {sent_count_pixel} pixel events")
-            print(f"  {sent_count_tdc} TDC events")
-            print(f"  {sent_count_ctrl} control events")
+            logger.info(
+                "Sent events during last session: %d pixel, %d TDC, %d control",
+                sent_count_pixel,
+                sent_count_tdc,
+                sent_count_ctrl,
+            )
         dt = datetime.datetime.fromtimestamp(time.time())
         formatted = dt.strftime("%Y-%m-%d %H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
         print(f"Current time: {formatted}")

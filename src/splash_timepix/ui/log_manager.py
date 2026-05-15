@@ -111,6 +111,9 @@ class LogManager(QObject):
         self._all_handle: Optional[object] = None
 
         self._using_fallback = False
+        # Paths opened during the last _ensure_today_open call, to be logged
+        # outside the lock to avoid a deadlock with the logging bridge.
+        self._pending_open_notifications: list[Path] = []
         self._install_python_logging_bridge()
 
     # ------------------------------------------------------------------
@@ -144,6 +147,12 @@ class LogManager(QObject):
                 # inside the lock ensures ordering matches disk ordering.
                 self.line_emitted.emit(source, formatted)
 
+        # Drain any newly-opened file notifications outside the lock to avoid
+        # a re-entrancy deadlock with the Python logging bridge.
+        newly_opened, self._pending_open_notifications = self._pending_open_notifications, []
+        for path in newly_opened:
+            logger.info("Log file opened: %s", path)
+
     def session_marker(self, message: str = "--- session marker ---") -> None:
         """Write a separator line to all open files (called on Clear Logs)."""
         with self._lock:
@@ -152,6 +161,10 @@ class LogManager(QObject):
             for stem in list(self._handles.keys()):
                 self._write_line(stem, formatted)
             self.line_emitted.emit("system", formatted)
+
+        newly_opened, self._pending_open_notifications = self._pending_open_notifications, []
+        for path in newly_opened:
+            logger.info("Log file opened: %s", path)
 
     def close(self) -> None:
         """Flush and close all open file handles (call from closeEvent)."""
@@ -197,6 +210,7 @@ class LogManager(QObject):
             path = day_dir / f"{stem}.log"
             try:
                 self._handles[stem] = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+                self._pending_open_notifications.append(path)
             except OSError as exc:
                 logger.error("Cannot open log file %s: %s", path, exc)
 
@@ -205,6 +219,7 @@ class LogManager(QObject):
         all_path = day_dir / "all.log"
         try:
             self._all_handle = open(all_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+            self._pending_open_notifications.append(all_path)
         except OSError as exc:
             logger.error("Cannot open all.log at %s: %s", all_path, exc)
             self._all_handle = None

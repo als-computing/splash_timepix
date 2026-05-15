@@ -43,11 +43,15 @@ class TimelineTab(QWidget):
 
         clear_btn = QPushButton("Clear View")
         clear_btn.setStyleSheet(theme.secondary_button_style())
-        clear_btn.clicked.connect(self._terminal.clear)
+        clear_btn.clicked.connect(self._on_clear_clicked)
         toolbar.addWidget(clear_btn)
 
         layout.addLayout(toolbar)
         layout.addWidget(self._terminal)
+
+    def _on_clear_clicked(self) -> None:
+        logger.info("Timeline tab: clear view requested")
+        self._terminal.clear()
 
     @Slot(str, str)
     def on_log_line(self, source: str, formatted_line: str) -> None:

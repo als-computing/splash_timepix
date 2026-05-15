@@ -246,6 +246,7 @@ def terminate_other_instance(
         logger.warning("Refusing to signal pid=%d: not a live TimePix UI process", pid)
         return False
 
+    logger.warning("Existing instance detected at pid=%d; sending SIGTERM", pid)
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
