@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar
 from splash_timepix.serval_client import ServalClient
 
 from . import single_instance, theme
+from .preferences import load_operator_preferences, save_operator_preferences
 from .alignment_tab import AlignmentTab
 from .engineering_tab import EngineeringTab
 from .log_manager import LogManager
@@ -410,33 +411,43 @@ class MainWindow(QMainWindow):
 
     def _save_on_stop(self, mode: str):
         """Save average data when stopping acquisition or replay."""
-        # For replay, save next to the source file
-        # For acquisition, use the configured output dir
+        # For replay, save next to the source file using the replay file's stem.
+        # For acquisition, use the persistent scan counter as the prefix so every
+        # scan gets a unique, incrementing number independent of Serval's naming.
+        newest_tpx3: Optional[Path] = None
+
         if mode == "replay" and self._current_replay_file:
             output_dir = str(Path(self._current_replay_file).parent)
             filename_base = Path(self._current_replay_file).stem
+            scan_counter = None  # counter is not used / not incremented for replay
         else:
             output_dir = self._current_output_dir
             if not output_dir:
                 output_dir = str(Path.home() / "Desktop")
                 self._log_manager.append("system", f"No output dir set, using {output_dir}")
 
-            # Find the newest/latest .tpx3 file in the output directory
+            # Find the newest/latest .tpx3 file in the output directory so we
+            # can rename it to match the derived output files.
             output_path = Path(output_dir)
             tpx3_files = list(output_path.glob("*.tpx3"))
 
             if tpx3_files:
                 newest_tpx3 = max(tpx3_files, key=lambda f: f.stat().st_mtime)
-                filename_base = newest_tpx3.stem
                 self._log_manager.append("system", f"Found newest tpx3: {newest_tpx3}")
             else:
                 self._log_manager.append("system", "WARNING: No .tpx3 files found in output directory, skipping save")
                 return
 
+            # Use the persistent scan counter as filename_base so the prefix
+            # increments with every acquisition regardless of Serval's naming.
+            prefs = load_operator_preferences()
+            scan_counter = prefs.get("scan_counter", 1)
+            filename_base = f"{scan_counter:06d}"
+
         self._log_manager.append("system", f"Saving to {output_dir} as {filename_base}...")
 
-        png_path, csv_path, energy_path, time_path, json_path = self._operator_tab.save_average_data(
-            output_dir, filename_base
+        png_path, csv_path, energy_path, time_path, json_path, slug = (
+            self._operator_tab.save_average_data(output_dir, filename_base)
         )
 
         if png_path:
@@ -451,6 +462,25 @@ class MainWindow(QMainWindow):
             self._log_manager.append("system", f"Saved: {json_path}")
         if not any([png_path, csv_path, energy_path, time_path, json_path]):
             self._log_manager.append("system", "No data to save")
+
+        # Rename the .tpx3 source file to share the same slug as the derived files.
+        # Only applies to live acquisition (newest_tpx3 is None in replay mode).
+        if newest_tpx3 and slug and newest_tpx3.exists():
+            try:
+                new_tpx3 = newest_tpx3.with_name(f"{filename_base}_{slug}.tpx3")
+                newest_tpx3.rename(new_tpx3)
+                self._log_manager.append("system", f"Renamed: {newest_tpx3.name} → {new_tpx3.name}")
+                logger.info("Renamed .tpx3: %s → %s", newest_tpx3.name, new_tpx3.name)
+            except OSError as e:
+                logger.warning("Could not rename .tpx3 file %s: %s", newest_tpx3, e)
+                self._log_manager.append("system", f"WARNING: Could not rename {newest_tpx3.name}: {e}")
+
+        # Increment the scan counter only after a successful acquisition save
+        # (at least one output file was written). Replay saves do not consume
+        # a counter slot.
+        if scan_counter is not None and any([png_path, csv_path, energy_path, time_path, json_path]):
+            save_operator_preferences({"scan_counter": scan_counter + 1})
+            logger.info("Scan counter advanced to %d", scan_counter + 1)
 
     def _force_stop_streaming_if_still_running(self):
         """Safety net: force-kill streaming server if it has not exited on its own.

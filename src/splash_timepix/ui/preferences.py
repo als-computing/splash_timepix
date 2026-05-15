@@ -43,6 +43,11 @@ DURATION_RANGE = (1, 19_008_000)
 
 # Alignment-tab numeric ranges, mirrored from AlignmentTab._setup_ui.
 ALIGNMENT_RATE_HZ_RANGE = (1, 30)
+
+# Scan counter: monotonically increasing integer written back after every
+# successful acquisition save. Gives each output file group a human-readable
+# sequential prefix independent of Serval's internal file naming.
+SCAN_COUNTER_RANGE = (1, 999_999)
 # Manual min/max levels span the practical range of uint32 alignment counts;
 # these are sanity bounds, not perceptually-tuned defaults.
 ALIGNMENT_LEVEL_RANGE = (0, 2**31 - 1)
@@ -81,6 +86,10 @@ def default_preferences() -> Dict[str, Any]:
         "alignment_show_crosshair": True,
         # Alignment-only local simulator (synthetic flushes; no Serval/live-cli).
         "alignment_simulator": False,
+        # Monotonically increasing scan counter, incremented after every
+        # successful acquisition save. Stored here so it persists across
+        # app restarts and accumulates across a full beamtime session.
+        "scan_counter": 1,
     }
 
 
@@ -264,6 +273,12 @@ def validate_and_clamp(raw: Any) -> Dict[str, Any]:
         raw.get("alignment_simulator", defaults["alignment_simulator"]),
         fallback=defaults["alignment_simulator"],
         name="alignment_simulator",
+    )
+    out["scan_counter"] = _clamp_int(
+        raw.get("scan_counter", defaults["scan_counter"]),
+        *SCAN_COUNTER_RANGE,
+        fallback=defaults["scan_counter"],
+        name="scan_counter",
     )
     return out
 
