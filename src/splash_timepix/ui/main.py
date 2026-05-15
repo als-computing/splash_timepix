@@ -9,8 +9,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import PySide6
+
 import numpy as np
-from PySide6.QtCore import QTimer, Slot
+from PySide6.QtCore import QTimer, Slot, qVersion
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
@@ -590,6 +592,15 @@ class MainWindow(QMainWindow):
         live alignment run is allowed (no auto-stop fires). The auto-stop is
         silent (status-bar + engineering-log line) — no confirmation dialog.
         """
+        _tab_names = {
+            self._alignment_idx: "Alignment",
+            self._operator_idx: "Operator",
+            self._engineering_idx: "Logs",
+            self._timeline_idx: "Timeline",
+        }
+        tab_name = _tab_names.get(new_index, f"Tab {new_index}")
+        logger.debug("Tab changed to: %s", tab_name)
+
         if new_index != self._operator_idx:
             return
         if not self._acquiring:
@@ -894,6 +905,14 @@ def main():
     # down. Non-Linux platforms skip enforcement (logs a warning).
     if not _handle_singleton():
         sys.exit(0)
+
+    logger.info(
+        "splash_timepix UI starting — Python %s, Qt %s, PySide6 %s, platform %s",
+        sys.version.split()[0],
+        qVersion(),
+        PySide6.__version__,
+        sys.platform,
+    )
 
     # Apply base dark theme stylesheet
     app.setStyleSheet(

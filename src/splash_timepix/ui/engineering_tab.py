@@ -40,6 +40,7 @@ class EngineeringTab(QWidget):
         super().__init__(parent)
         self._terminals: dict[str, TerminalWidget] = {}
         self._setup_ui()
+        logger.debug("EngineeringTab initialized")
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -50,7 +51,7 @@ class EngineeringTab(QWidget):
 
         kill_all_btn = QPushButton("Kill All Processes")
         kill_all_btn.setStyleSheet(theme.button_style(theme.BUTTON_STOP))
-        kill_all_btn.clicked.connect(self.kill_all_requested.emit)
+        kill_all_btn.clicked.connect(self._on_kill_all_clicked)
         toolbar.addWidget(kill_all_btn)
 
         clear_btn = QPushButton("Clear Logs")
@@ -97,7 +98,12 @@ class EngineeringTab(QWidget):
 
         layout.addLayout(grid)
 
+    def _on_kill_all_clicked(self) -> None:
+        logger.warning("Kill-all signal emitted from engineering tab")
+        self.kill_all_requested.emit()
+
     def _clear_all_logs(self):
+        logger.info("Clear all logs requested from engineering tab")
         for terminal in self._terminals.values():
             terminal.clear()
         self.clear_logs_requested.emit()

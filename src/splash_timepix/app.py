@@ -214,6 +214,13 @@ def main(
     else:
         xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
 
+    logger.info(
+        "XYT array allocated: shape=%s, dtype=%s, size=%.2f MB",
+        xyt_array.shape,
+        xyt_array.dtype,
+        xyt_array.nbytes / 1e6,
+    )
+
     xyt_lock = threading.Lock()
 
     # Build static metadata dict (parameters that don't change during run)
@@ -1115,6 +1122,8 @@ def main(
         print("\nShutting down server...")
 
     finally:
+        _shutdown_start = time.time()
+        logger.info("Shutdown sequence initiated")
         # Send stop message only if a start was sent and stop hasn't been sent yet.
         # Guarding on start_message_sent prevents an orphan stop from being published
         # with the server's initial UUID when the client connection was never detected
@@ -1167,6 +1176,7 @@ def main(
             if input_thread.is_alive():
                 logger.warning("Input listener did not finish in time")
 
+        logger.info("Shutdown sequence complete (elapsed %.1fs)", time.time() - _shutdown_start)
         print("Server stopped successfully")
 
 

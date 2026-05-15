@@ -285,7 +285,9 @@ def load_operator_preferences(path: Optional[Union[Path, str]] = None) -> Dict[s
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("Preferences: failed to read %s (%s); using defaults", p, e)
         return default_preferences()
-    return validate_and_clamp(raw)
+    result = validate_and_clamp(raw)
+    logger.info("Preferences loaded from %s (%d top-level keys)", p, len(result))
+    return result
 
 
 def save_operator_preferences(prefs: Dict[str, Any], path: Optional[Union[Path, str]] = None) -> None:
@@ -338,3 +340,4 @@ def save_operator_preferences(prefs: Dict[str, Any], path: Optional[Union[Path, 
             # the replace below is still atomic on POSIX.
             pass
     os.replace(tmp_path, p)
+    logger.info("Preferences saved to %s", p)
