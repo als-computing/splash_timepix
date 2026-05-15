@@ -114,7 +114,11 @@ class ZmqSubscriberWorker(QThread):
                     # Control messages (start/stop) are single-part; data (event) messages are multi-part
                     is_data_message = msg_type != "start" and msg_type != "stop"
                     if not is_data_message:
-                        # Start or stop: no second part, skip to next message
+                        logger.info(
+                            "ZMQ %s received for scan: %s",
+                            msg_type,
+                            metadata.get("scan_name", "?"),
+                        )
                         continue
 
                     # Data message: receive second part (array bytes)
