@@ -560,9 +560,9 @@ class AlignmentTab(QWidget):
 
         vb = self._plot.getViewBox()
         vb.setMouseEnabled(x=False, y=False)
-        vb.setRange(xRange=(0, _DETECTOR_X), yRange=(0, _DETECTOR_Y), padding=0)
+        vb.setDefaultPadding(0)
         vb.disableAutoRange()
-        vb.setAspectLocked(True, ratio=1.0)
+        vb.setRange(xRange=(0, _DETECTOR_X), yRange=(0, _DETECTOR_Y), padding=0)
         vb.setBackgroundColor(theme.BG_DARK)
         self._viewbox = vb
 
