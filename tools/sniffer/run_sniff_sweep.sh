@@ -45,7 +45,7 @@ for cfg in "${configs[@]}"; do
     LIVECLI_EXTRA_ARGS="" \
     DURATION_S="$DURATION_S" \
     TAG="$tag" \
-    bash "$PROJECT_ROOT/scripts/sniffing/run_sniff_experiment.sh" 2>&1 | \
+    bash "$PROJECT_ROOT/tools/sniffer/run_sniff_experiment.sh" 2>&1 | \
         grep -E '^\[(init|1/5|2/5|3/5|4/5|5/5|drain|cleanup)\]|ERROR|live-cli|panic' || true
 
     pcap=$(ls -t /tmp/sniff_*_${tag}.pcap 2>/dev/null | head -1)

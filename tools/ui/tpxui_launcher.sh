@@ -5,14 +5,14 @@
 # If Serval is already running, it will be detected and not started again.
 #
 # Usage:
-#   ./scripts/tpxui_launcher.sh
+#   ./tools/ui/tpxui_launcher.sh
 #   Or create a desktop shortcut pointing to this script
 
 # Get the directory where this script lives
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Project root is one level up from scripts/
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Project root is two levels up from tools/ui/
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 # Path to virtual environment
 VENV_PATH="$PROJECT_DIR/.venv"

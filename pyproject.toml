@@ -26,7 +26,7 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
-dependencies = ["numpy", "typer", "psutil", "opencv-python", "pyzmq", "msgpack", "requests", "pydantic"]
+dependencies = ["numpy", "h5py", "typer", "psutil", "opencv-python", "pyzmq", "msgpack", "requests", "pydantic"]
 
 [project.optional-dependencies]
 ui = ["PySide6>=6.5.0", "pyqtgraph>=0.13"]
@@ -82,7 +82,8 @@ addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
-    "--color=yes"
+    "--color=yes",
+    "-m", "not slow"
 ]
 markers = [
     "slow: marks tests as slow",

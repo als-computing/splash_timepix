@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sniffer-pcap analyzer for the Serval → live-cli → splash_timepix.app pipeline.
 
-Pairs with ``scripts/sniffing/flush_pacing_listener.py``.  Given:
+Pairs with ``tools/sniffer/flush_pacing_listener.py``.  Given:
 
   * a pcap from ``tcpdump -i lo 'tcp port 7070 or tcp port 9090'``
   * (optionally) a JSON artifact from ``flush_pacing_listener.py``
@@ -18,9 +18,9 @@ The three series share a wall-clock origin (the listener's
 
 Usage::
 
-    python scripts/sniffing/sniff_analyze.py /tmp/sniff_NNN.pcap
-    python scripts/sniffing/sniff_analyze.py /tmp/sniff_NNN.pcap --listener /tmp/flush_pacing_NNN.json
-    python scripts/sniffing/sniff_analyze.py /tmp/sniff_NNN.pcap --bin 0.1   # 100 ms bins
+    python tools/sniffer/sniff_analyze.py /tmp/sniff_NNN.pcap
+    python tools/sniffer/sniff_analyze.py /tmp/sniff_NNN.pcap --listener /tmp/flush_pacing_NNN.json
+    python tools/sniffer/sniff_analyze.py /tmp/sniff_NNN.pcap --bin 0.1   # 100 ms bins
 
 Diagnostic interpretation
 -------------------------

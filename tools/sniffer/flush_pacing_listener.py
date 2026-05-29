@@ -26,14 +26,14 @@ real detector:
 Usage::
 
     # In one terminal (server already running, UI optionally running):
-    python scripts/sniffing/flush_pacing_listener.py
+    python tools/sniffer/flush_pacing_listener.py
 
     # When the acquisition is over, Ctrl+C to print the final summary
     # and write a JSON artifact to /tmp/flush_pacing_<unix-ts>.json.
 
 Connect to a non-default port::
 
-    python scripts/sniffing/flush_pacing_listener.py --zmq-port 5657 --hb-port 5658
+    python tools/sniffer/flush_pacing_listener.py --zmq-port 5657 --hb-port 5658
 
 The script is intentionally dependency-light: stdlib + ``pyzmq`` +
 ``msgpack``, the same set already required by the package.

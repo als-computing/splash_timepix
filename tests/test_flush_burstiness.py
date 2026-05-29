@@ -1,49 +1,22 @@
-"""Burstiness / flush-pacing experiment.
+"""Bursty-wire regression test for flush pacing (server commit 754c857).
 
-Runs the streaming server under the `streaming_rig` fixture with a grid of
-``(cps, tdc_frequency)`` values and measures the wall-clock distribution of
-ZMQ ``event`` messages as they arrive at a subscriber.
+Asserts the post-fix invariants under a 2 s-bolus wire pattern that
+reproduces the production Serval + luna-iterator regime:
 
-Why this exists
----------------
+- CV < 0.5  — flush pacing must be near-uniform
+- fraction_sub_50ms < 0.1  — no microsecond-clustered emits
+- flush_numbers contiguous 1..N, total_cycles monotonic
+- sum(event.cycles_in_flush) == stop.total_cycles  (conservation)
 
-In production (behind luna-iterator) the server used to emit flushes in
-bursts: the sorter upstream batched packets in multi-second chunks, so the
-server saw many TDCs back-to-back and the *original* TDC-count-based flush
-gate fired repeatedly inside a single ``data_callback`` invocation.  Server
-commit ``754c857`` replaced the cycle-count gate with a wall-clock gate:
-``emit_flush_if_due`` now fires when
-``time.monotonic() - last_flush_time >= flush_interval``, called from both
-``handle_tdc`` and the main-loop silence watchdog, so flush cadence is
-decoupled from TDC arrival cadence.
-
-This test suite stays useful post-fix as a *regression* harness: the
-bursty-wire test (``test_batched_wire_regression``) asserts the green-path
-invariants (CV < 0.5, no microsecond-clustered emits, monotonic flush
-numbers, conservation of cycles) that would break again if the gate ever
-slipped back to event-driven semantics.  The smooth-wire grid is purely
-observational and prints CV / count-vs-expected per combo for diagnostics.
-
-Design
-------
-
-- 5x5 grid of (cps, tdc) — 25 combos, logarithmic in both axes.
-- DAQ = 15 s per combo, ``flush_interval = 1 s`` (matches the original
-  symptom case that motivated commit ``754c857``).
-- Fresh server subprocess per combo via the ``streaming_rig`` fixture.
-- Simulator spawned via ``simulator_cli --auto-start --duration 15``.
-- Per combo we record ``time.monotonic()`` at every ``recv()`` of an event
-  message, then derive: count, expected count, mean/median/std/min/max of
-  inter-flush deltas, the coefficient of variation (std/mean, our primary
-  burstiness metric), the fraction of deltas under 50 ms (microsecond-cluster
-  concern), and the longest silence between flushes.
+For exploratory grid diagnostics (5×5 cps/tdc sweep) see:
+    tools/diagnostics/flush_burstiness.py
 
 Running
 -------
 
 ::
 
-    pytest -v -s tests/test_flush_burstiness.py
+    pytest -v -s tests/test_flush_burstiness.py -m slow
 """
 
 from __future__ import annotations
@@ -60,38 +33,22 @@ import msgpack
 import pytest
 import zmq
 
-# =============================================================================
-# Grid (overridable via env for quick smoke runs)
-#   BURSTINESS_CPS="100,10000" BURSTINESS_TDC="10,1000" BURSTINESS_DAQ=5 ...
-# =============================================================================
-
-
-def _env_int_tuple(name: str, default: Tuple[int, ...]) -> Tuple[int, ...]:
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    return tuple(int(x.strip()) for x in raw.split(",") if x.strip())
-
-
-CPS_VALUES: Tuple[int, ...] = _env_int_tuple("BURSTINESS_CPS", (10, 100, 1_000, 10_000, 100_000))
-TDC_VALUES: Tuple[int, ...] = _env_int_tuple("BURSTINESS_TDC", (1, 10, 100, 1_000, 10_000))
-
-DAQ_SECONDS: int = int(os.environ.get("BURSTINESS_DAQ", 15))
-FLUSH_INTERVAL_S: float = float(os.environ.get("BURSTINESS_FLUSH", 1.0))
-
 # Wallclock budget for the simulator's wire stream to drain on the receiver.
 # Must exceed the nominal DAQ window by enough headroom to cover TCP back-
 # pressure at the highest-load combo (cps=100k, tdc=10k Hz, tcp_batch=2 s):
 # the server's parse + per-flush ZMQ publish saturates the recv loop, which
 # stalls the simulator's sendall and stretches a 15 s synthetic stream to
-# ~40 s of wallclock on the GitHub Actions ubuntu-latest runner. 4x DAQ
-# leaves comfortable margin without unbounding the test on a real hang.
-SIM_WAIT_BUDGET_S: float = 60.0
+# 75 s+ of wallclock on slower hosts (observed locally; ~40 s on the GitHub
+# Actions ubuntu-latest runner). This budget is only a *ceiling* — the
+# collect loop breaks the instant the stop message arrives — so generous
+# headroom is essentially free on passing runs and only bounds a genuine
+# hang. 150 s ≈ 10x DAQ keeps comfortable margin across host speeds.
+SIM_WAIT_BUDGET_S: float = 150.0
 
 # After the sim closes its TCP socket the server still needs to flush its
 # ingest queue, take the final cycle-count snapshot, and publish the stop
-# message on the ZMQ PUB socket. 20 s comfortably covers that even under
-# the heavy-load combo where the queue can hold a few seconds of arrears.
+# message on the ZMQ PUB socket. Added on top of SIM_WAIT_BUDGET_S as the
+# post-drain grace window for that final stop to land.
 STOP_WAIT_BUDGET_S: float = 20.0
 
 
@@ -263,173 +220,6 @@ def _collect_with_timestamps(
                 result.flush_numbers.append(fn)
 
     return result
-
-
-# =============================================================================
-# Experiment
-# =============================================================================
-
-
-@pytest.mark.slow
-@pytest.mark.integration
-def test_flush_burstiness_grid(streaming_rig):
-    """Sweep (cps, tdc) and print a burstiness summary.
-
-    This is an experiment, not a pass/fail test: it asserts only that the
-    rig came up and that *something* was received (to catch catastrophic
-    misconfiguration).  The interesting output is the printed table at the
-    end.
-    """
-    results: List[ComboResult] = []
-
-    total_combos = len(CPS_VALUES) * len(TDC_VALUES)
-    print("\n\n")
-    print("=" * 100)
-    print(
-        f"FLUSH BURSTINESS EXPERIMENT — {total_combos} combos, {DAQ_SECONDS}s each, "
-        f"flush_interval={FLUSH_INTERVAL_S}s"
-    )
-    print("=" * 100)
-
-    combo_idx = 0
-    for tdc in TDC_VALUES:
-        for cps in CPS_VALUES:
-            combo_idx += 1
-            print(f"\n[{combo_idx}/{total_combos}] cps={cps}  tdc={tdc} Hz  ...", flush=True)
-
-            rig = streaming_rig(
-                tdc_frequency=float(tdc),
-                cps=float(cps),
-                flush_interval=FLUSH_INTERVAL_S,
-                # --exit-on-disconnect: the server self-exits cleanly when
-                # the simulator closes its TCP socket at the end of the DAQ.
-                # This matters because we run under a sandbox that denies
-                # kill() on subprocesses, so relying on the server's own
-                # shutdown is the only way to release its port.
-                exit_on_disconnect=True,
-                # Detector shape defaults; we don't stress memory here.
-                collapse_y=True,
-            )
-
-            # Fire the simulator.  It opens the TCP socket on
-            # start_auto_sending(), which is what triggers the server's
-            # "client connected" branch and the start ZMQ message.
-            sim_proc: subprocess.Popen = rig.spawn_simulator_cli(
-                duration=DAQ_SECONDS,
-                cps=cps,
-                tdc_frequency=tdc,
-                counting=False,  # avoid per-packet parse overhead
-            )
-
-            # Collect until stop or budget exhausted.
-            deadline = time.monotonic() + SIM_WAIT_BUDGET_S + STOP_WAIT_BUDGET_S
-            combo = _collect_with_timestamps(
-                rig.sub_sock,
-                stop_deadline_monotonic=deadline,
-            )
-            combo.cps = cps
-            combo.tdc = tdc
-            combo.flush_interval_s = FLUSH_INTERVAL_S
-
-            # Wall-clock flush gate (server commit 754c857): expected count
-            # tracks the *observed* stream wall-clock duration, not the
-            # nominal DAQ window. For smooth-wire combos stream ≈ DAQ; under
-            # any TCP backpressure the stream stretches and expected scales
-            # accordingly. The printed "GRID VIEW — flushes received vs
-            # expected" stays meaningful in both regimes.
-            combo.expected_flushes = max(0.0, combo.stream_duration_s / FLUSH_INTERVAL_S)
-
-            # Reap the sim (we ran it with --duration so it exits by itself;
-            # under the sandbox we cannot kill() it, so we just wait).
-            try:
-                sim_proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                pass  # will be handled by eager teardown below
-
-            # Lightweight annotations
-            if combo.n_stops == 0:
-                combo.notes = "(NO stop received)"
-            elif combo.n_events == 0:
-                combo.notes = "(NO events)"
-
-            # Annotate the known low-TDC race.
-            if tdc < 50:
-                if combo.notes:
-                    combo.notes += " [low-TDC race zone]"
-                else:
-                    combo.notes = "[low-TDC race zone]"
-
-            results.append(combo)
-            print("   " + combo.summary_row())
-
-            # Tear this combo's rig down NOW rather than leaking 25 server
-            # subprocesses and 50 ZMQ sockets to the fixture's final teardown.
-            _teardown_rig_eagerly(rig)
-
-    # =========================================================================
-    # Final summary
-    # =========================================================================
-
-    print("\n\n")
-    print("=" * 110)
-    print("SUMMARY — sorted by burstiness (CV of inter-flush Δt, descending)")
-    print("=" * 110)
-    print("CV = std(Δt) / mean(Δt).  CV ≈ 0 is perfectly regular; CV ≥ 1 means bursts dominate.")
-    print("'<50ms' = fraction of inter-flush gaps below 50 ms, i.e. flushes arriving almost on top of each other.")
-    print("-" * 110)
-
-    def _cv(r: ComboResult) -> float:
-        d = r.deltas_s
-        if not d:
-            return -1.0
-        m = statistics.fmean(d)
-        if m == 0:
-            return -1.0
-        s = statistics.pstdev(d) if len(d) > 1 else 0.0
-        return s / m
-
-    for r in sorted(results, key=_cv, reverse=True):
-        print(r.summary_row())
-
-    print("\n")
-    print("=" * 110)
-    print("GRID VIEW — coefficient of variation of inter-flush Δt")
-    print("=" * 110)
-    header = "               " + "".join(f"cps={c:>7g}  " for c in CPS_VALUES)
-    print(header)
-    for tdc in TDC_VALUES:
-        row = [f"tdc={tdc:>6g} Hz | "]
-        for cps in CPS_VALUES:
-            r = next((x for x in results if x.tdc == tdc and x.cps == cps), None)
-            if r is None:
-                row.append("    -     ")
-                continue
-            cv = _cv(r)
-            if cv < 0:
-                row.append("   n/a    ")
-            else:
-                row.append(f"  {cv:>5.2f}    ")
-        print("".join(row))
-
-    print("\n")
-    print("=" * 110)
-    print("GRID VIEW — flushes received vs expected  (recv / ~expected)")
-    print("=" * 110)
-    print(header)
-    for tdc in TDC_VALUES:
-        row = [f"tdc={tdc:>6g} Hz | "]
-        for cps in CPS_VALUES:
-            r = next((x for x in results if x.tdc == tdc and x.cps == cps), None)
-            if r is None:
-                row.append("    -     ")
-                continue
-            row.append(f"  {r.n_events:>3d}/{r.expected_flushes:>4.0f}  ")
-        print("".join(row))
-
-    # Sanity gate: we want at least one combo to have produced flushes,
-    # otherwise the whole rig is broken and the numbers above are noise.
-    produced_any = any(r.n_events > 0 for r in results)
-    assert produced_any, "no combo produced any ZMQ event messages — rig is broken"
 
 
 # =============================================================================

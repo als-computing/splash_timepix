@@ -19,6 +19,7 @@ descriptor.").
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -34,6 +35,33 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="single-instance
 import fcntl  # noqa: E402
 
 from splash_timepix.ui import single_instance  # noqa: E402
+
+
+def _can_signal_subprocess() -> bool:
+    """Return True if this process can SIGTERM a subprocess it spawned.
+
+    Some sandboxed environments restrict ptrace/signal delivery even to
+    child processes owned by the same UID.  The four tests that spawn a
+    ``sleep`` helper and then SIGTERM it are meaningless in those
+    environments and should be skipped rather than fail noisily.
+    """
+    try:
+        proc = subprocess.Popen(["sleep", "5"])
+        time.sleep(0.05)
+        os.kill(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=2)
+        return True
+    except PermissionError:
+        return False
+    except Exception:
+        return False
+
+
+_HAS_SIGNAL_PERMISSION = _can_signal_subprocess()
+_skip_no_signal = pytest.mark.skipif(
+    not _HAS_SIGNAL_PERMISSION,
+    reason="cannot SIGTERM own subprocess in this environment (sandbox restriction)",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +181,7 @@ def test_is_other_instance_alive_rejects_dead_pid():
     assert single_instance.is_other_instance_alive(bogus_pid) is False
 
 
+@_skip_no_signal
 def test_is_other_instance_alive_rejects_unrelated_cmdline():
     """A live process whose cmdline lacks our markers is rejected.
 
@@ -174,6 +203,7 @@ def test_is_other_instance_alive_rejects_unrelated_cmdline():
             proc.wait()
 
 
+@_skip_no_signal
 def test_is_other_instance_alive_accepts_matching_marker():
     """When markers match the cmdline, a live same-uid process is accepted."""
     proc = subprocess.Popen(["sleep", "10"])
@@ -189,6 +219,7 @@ def test_is_other_instance_alive_accepts_matching_marker():
             proc.wait()
 
 
+@_skip_no_signal
 def test_terminate_other_instance_refuses_unrelated_process():
     """Refuse SIGTERM if cmdline doesn't match our markers (no signal sent)."""
     proc = subprocess.Popen(["sleep", "10"])
@@ -207,6 +238,7 @@ def test_terminate_other_instance_refuses_unrelated_process():
             proc.wait()
 
 
+@_skip_no_signal
 def test_terminate_other_instance_signals_matching_process():
     """When markers match, SIGTERM is delivered and the process exits."""
     proc = subprocess.Popen(["sleep", "10"])
