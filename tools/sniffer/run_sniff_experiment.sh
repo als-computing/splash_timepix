@@ -11,7 +11,7 @@
 #   3. Starts live-cli with Henrique's recommended args.
 #   4. Starts flush_pacing_listener.py (so it captures the start_msg).
 #   5. Drives Serval via acq.py --preview -time DURATION (blocks until done).
-#   6. Tears everything down and runs scripts/sniffing/sniff_analyze.py on the pcap+JSON.
+#   6. Tears everything down and runs tools/sniffer/sniff_analyze.py on the pcap+JSON.
 #
 # Pre-reqs:
 #   * Serval must be running on :8080 (the UI's --autostart-serval handles this)
@@ -21,9 +21,9 @@
 #   * Ports 7070 / 9090 must be free (UI must NOT have an active acquisition)
 #
 # Usage:
-#   bash scripts/sniffing/run_sniff_experiment.sh                   # 90 s default
-#   DURATION_S=120 bash scripts/sniffing/run_sniff_experiment.sh
-#   TDC_FREQ=100 DURATION_S=60 bash scripts/sniffing/run_sniff_experiment.sh
+#   bash tools/sniffer/run_sniff_experiment.sh                   # 90 s default
+#   DURATION_S=120 bash tools/sniffer/run_sniff_experiment.sh
+#   TDC_FREQ=100 DURATION_S=60 bash tools/sniffer/run_sniff_experiment.sh
 
 set -uo pipefail
 
@@ -173,7 +173,7 @@ echo "      pid=$LIVECLI_PID listening on :7070, target=:9090"
 echo ""
 
 echo "[4/5] flush_pacing_listener.py → $LISTENER_JSON"
-"$PY" scripts/sniffing/flush_pacing_listener.py \
+"$PY" tools/sniffer/flush_pacing_listener.py \
     --zmq-port 5657 --hb-port 5658 \
     --ticker-interval 5.0 \
     --artifact "$LISTENER_JSON" \
@@ -215,7 +215,7 @@ echo "  logs      : $LOG_DIR/"
 
 if [ -f "$PCAP" ] && [ -f "$LISTENER_JSON" ]; then
     echo ""
-    "$PY" scripts/sniffing/sniff_analyze.py "$PCAP" \
+    "$PY" tools/sniffer/sniff_analyze.py "$PCAP" \
         --listener "$LISTENER_JSON" \
         --bin 1.0 --gap-threshold 2.0
 fi

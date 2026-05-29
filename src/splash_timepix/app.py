@@ -603,7 +603,8 @@ def main(
         if not xyt_queue.empty():
             logger.warning(
                 "xyt_queue not drained after %.1fs (scan=%s); stop message may arrive before remaining flushes",
-                timeout, scan_name,
+                timeout,
+                scan_name,
             )
 
     def do_final_flush() -> None:
@@ -647,7 +648,12 @@ def main(
         }
         try:
             xyt_queue.put_nowait((array_copy, flush_metadata))
-            logger.info("Final flush #%d: %d partial cycles flushed before stop (scan=%s)", flush_count, partial_cycles, scan_name)
+            logger.info(
+                "Final flush #%d: %d partial cycles flushed before stop (scan=%s)",
+                flush_count,
+                partial_cycles,
+                scan_name,
+            )
         except queue.Full:
             logger.warning("Processing queue full, dropping final flush (scan=%s)", scan_name)
 

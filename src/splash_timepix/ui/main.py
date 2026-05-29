@@ -9,9 +9,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import PySide6
-
 import numpy as np
+import PySide6
 from PySide6.QtCore import QTimer, Slot, qVersion
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar, QTabWidget, QVBoxLayout, QWidget
@@ -19,11 +18,11 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar
 from splash_timepix.serval_client import ServalClient
 
 from . import single_instance, theme
-from .preferences import load_operator_preferences, save_operator_preferences
 from .alignment_tab import AlignmentTab
 from .engineering_tab import EngineeringTab
 from .log_manager import LogManager
 from .operator_tab import OperatorTab
+from .preferences import load_operator_preferences, save_operator_preferences
 from .timeline_tab import TimelineTab
 from .workers import (
     FlushData,
@@ -446,8 +445,8 @@ class MainWindow(QMainWindow):
 
         self._log_manager.append("system", f"Saving to {output_dir} as {filename_base}...")
 
-        png_path, csv_path, energy_path, time_path, json_path, slug = (
-            self._operator_tab.save_average_data(output_dir, filename_base)
+        png_path, csv_path, energy_path, time_path, json_path, slug = self._operator_tab.save_average_data(
+            output_dir, filename_base
         )
 
         if png_path:

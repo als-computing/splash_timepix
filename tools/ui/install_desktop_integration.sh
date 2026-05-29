@@ -24,15 +24,15 @@
 # regardless of where the repo is cloned.
 #
 # Usage:
-#   ./scripts/install_desktop_integration.sh           # install everything
-#   ./scripts/install_desktop_integration.sh --uninstall
+#   ./tools/ui/install_desktop_integration.sh           # install everything
+#   ./tools/ui/install_desktop_integration.sh --uninstall
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-LAUNCHER="$PROJECT_DIR/scripts/tpxui_launcher.sh"
+LAUNCHER="$PROJECT_DIR/tools/ui/tpxui_launcher.sh"
 ICON_SRC="$PROJECT_DIR/src/splash_timepix/ui/assets/icon.png"
 
 APP_ID="splash_timepix"
@@ -140,5 +140,5 @@ Next steps:
     (or restart the extension) before the dock picks up the new launcher.
   - First click on the Desktop shortcut: GNOME asks "Allow Launching"; click it.
 
-Uninstall with: $0 --uninstall
+Uninstall with: tools/ui/install_desktop_integration.sh --uninstall
 EOF

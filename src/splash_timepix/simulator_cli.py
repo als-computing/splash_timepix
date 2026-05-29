@@ -14,10 +14,10 @@ from typing import Optional
 
 import typer
 
-logger = logging.getLogger(__name__)
-
 from splash_timepix.parser import PacketParser
 from splash_timepix.simulator import PacketSimulator, PacketType, SimulatorConfig
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer()
 
