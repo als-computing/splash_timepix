@@ -3,11 +3,13 @@
 Workers communicate with the UI via Qt signals to ensure thread safety.
 """
 
+import importlib.util
 import logging
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
 import msgpack
@@ -501,3 +503,113 @@ class ProcessManager(QObject):
         data = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
         if data:
             self.process_output.emit(name, data)
+
+
+# =============================================================================
+# Centroider sweep (tools/centroider) integration
+# =============================================================================
+
+# Project root: .../splash_timepix_dev (workers.py is at src/splash_timepix/ui/).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_CENTROIDER_DIR = _PROJECT_ROOT / "tools" / "centroider"
+
+_centroider_api: Optional[ModuleType] = None
+
+
+def import_centroider_api() -> ModuleType:
+    """Import the centroider backend (tools/centroider/api.py) in-process.
+
+    The centroider package lives outside the installed ``splash_timepix``
+    package, so its directory is added to ``sys.path`` (api.py also relies on
+    that for its sibling imports) and the module is loaded from its file path.
+    The module is cached after the first successful import.
+    """
+    global _centroider_api
+    if _centroider_api is not None:
+        return _centroider_api
+
+    api_path = _CENTROIDER_DIR / "api.py"
+    if not api_path.exists():
+        raise FileNotFoundError(f"centroider backend not found at: {api_path}")
+
+    if str(_CENTROIDER_DIR) not in sys.path:
+        sys.path.insert(0, str(_CENTROIDER_DIR))
+
+    spec = importlib.util.spec_from_file_location("centroider_api", api_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load centroider backend from {api_path}")
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec so dataclass annotation resolution (which looks the
+    # module up in sys.modules via cls.__module__) succeeds.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _centroider_api = module
+    return module
+
+
+class CentroiderWorker(QThread):
+    """Runs a centroider sweep in a background thread, calling the centroider
+    backend (``tools/centroider/api.run_sweep``) and relaying its progress
+    callbacks as Qt signals.
+
+    All sweep orchestration lives in the centroider backend; this worker is
+    only the threading + signal glue.
+    """
+
+    # ProgressEvent emitted when a run begins (status is None).
+    progress = Signal(object)
+    # ProgressEvent emitted when a run finishes (status is "ok"/"failed"/"skipped").
+    combo_finished = Signal(object)
+    # SweepResult emitted once the whole sweep completes.
+    sweep_finished = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        input_file: str,
+        eps_s: str,
+        eps_t: str,
+        tpx3dump: Optional[str] = None,
+        output_parent: Optional[str] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._input_file = input_file
+        self._eps_s = eps_s
+        self._eps_t = eps_t
+        self._tpx3dump = tpx3dump
+        self._output_parent = output_parent
+
+    def run(self) -> None:
+        try:
+            api = import_centroider_api()
+        except Exception as exc:  # noqa: BLE001
+            self.error_occurred.emit(f"Failed to load centroider backend: {exc}")
+            return
+
+        # Default the output parent to the input file's directory.
+        output_parent = self._output_parent or str(Path(self._input_file).parent)
+
+        def _callback(event) -> None:
+            if event.phase == "done":
+                # Final sweep-complete marker; sweep_finished covers this.
+                return
+            if event.status is None:
+                self.progress.emit(event)
+            else:
+                self.combo_finished.emit(event)
+
+        try:
+            result = api.run_sweep(
+                input_file=self._input_file,
+                output_parent=output_parent,
+                eps_t_list=self._eps_t,
+                eps_s_list=self._eps_s,
+                tpx3dump=self._tpx3dump,
+                progress_callback=_callback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.error_occurred.emit(str(exc))
+            return
+
+        self.sweep_finished.emit(result)

@@ -19,6 +19,7 @@ from splash_timepix.serval_client import ServalClient
 
 from . import single_instance, theme
 from .alignment_tab import AlignmentTab
+from .centroider_tab import CentroiderTab
 from .engineering_tab import EngineeringTab
 from .log_manager import LogManager
 from .operator_tab import OperatorTab
@@ -104,6 +105,11 @@ class MainWindow(QMainWindow):
         # Timeline tab — integrated, time-ordered view of all subsystem logs.
         self._timeline_tab = TimelineTab()
         self._timeline_idx = self._tabs.addTab(self._timeline_tab, "Timeline")
+
+        # Centroider tab — offline parameter sweep over clustering eps-s / eps-t.
+        # Self-contained (owns its own worker); does NOT trigger alignment auto-stop.
+        self._centroider_tab = CentroiderTab()
+        self._centroider_idx = self._tabs.addTab(self._centroider_tab, "Centroider")
 
         # Auto-stop alignment on Operator-tab entry. See _on_tab_changed.
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -726,6 +732,12 @@ class MainWindow(QMainWindow):
         if self._serval_worker:
             self._serval_worker.stop()
             self._serval_worker.wait(2000)
+
+        # Stop the centroider sweep worker if one is running.
+        try:
+            self._centroider_tab.shutdown()
+        except Exception:
+            logger.exception("Failed to shut down centroider tab")
 
         # Stop all processes (including Serval)
         if self._process_manager:
