@@ -32,7 +32,7 @@ repos:
         description: Check for files that contain merge conflict strings
       - id: check-added-large-files
         description: Prevent giant files from being committed
-        args: ['--maxkb=1000000']
+        args: ['--maxkb=100000']
 
   # black / isort / flake8 — versions from pyproject.toml via tools/dev/precommit_lint.sh
   - repo: local
