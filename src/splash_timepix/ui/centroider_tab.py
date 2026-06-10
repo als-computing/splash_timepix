@@ -306,7 +306,7 @@ class CentroiderTab(QWidget):
         self._plot.setBackground(theme.BG_DARK)
         plot_item = self._plot.getPlotItem()
         plot_item.showGrid(x=True, y=True, alpha=0.2)
-        plot_item.setLabel("bottom", "x (pixel / cluster centroid)")
+        plot_item.setLabel("bottom", "y (pixel / cluster centroid — dispersive axis)")
         plot_item.setLabel("left", "counts")
         self._legend = plot_item.addLegend(offset=(-10, 10))
         layout.addWidget(self._plot, stretch=1)
