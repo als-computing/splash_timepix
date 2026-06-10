@@ -3,12 +3,16 @@ histogramify.py
 ===============
 
 Turns sweep-generated .h5 files into per-file CSV histograms over the
-cluster x-centroid (or raw pixel-x for the PixelHits baseline).
+cluster y-centroid (or raw pixel-y for the PixelHits baseline).
 
 Two modes, auto-detected by filename suffix:
 
-  *_PixelHits.h5  ->  reads PixelHits['x'], fixed bins 0..255 (256 rows always)
-  all others      ->  reads Clusters['cx'], np.unique(return_counts=True)
+  *_PixelHits.h5  ->  reads PixelHits['y'], fixed bins 0..255 (256 rows always)
+  all others      ->  reads Clusters['cy'], np.unique(return_counts=True)
+
+Note: tpx3dump labels the dispersive (physically "horizontal") detector axis
+as ``y``/``cy``.  We read that column and call it "x" in the CSV output so
+that downstream consumers see a consistently named spatial axis.
 
 Can be imported and called in-process by sweep.py, or used standalone::
 
@@ -55,31 +59,39 @@ _SWEEP_NAME_RE = re.compile(r"_t(?P<eps_t>[^_]+)_s(?P<eps_s>\d+)$")
 
 def histogramify_clusters(h5_path: Path) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Read ``Clusters['cx']`` from an HDF5 file.
+    Read ``Clusters['cy']`` from an HDF5 file.
 
-    Returns ``(xs, counts)`` where *xs* are unique float cluster-x centroids
-    sorted ascending and *counts* are the number of clusters at each x.
-    Each cluster contributes 1; y and t dimensions are collapsed.
+    Returns ``(xs, counts)`` where *xs* are unique cluster-y centroids sorted
+    ascending and *counts* are the number of clusters at each position.
+    Each cluster contributes 1; x and t dimensions are collapsed.
+
+    Note: tpx3dump's ``cy`` (physical row) corresponds to the dispersive axis
+    of the detector as mounted — the axis that shows the two-peak structure
+    expected from the beam.  Despite the column name, we label the output axis
+    "x" throughout the pipeline to mean "the spatial axis we care about".
     """
     with h5py.File(h5_path, "r") as f:
-        cx = f["Clusters"]["cx"][:]
-    cx = np.asarray(cx, dtype=float)
-    xs, counts = np.unique(cx, return_counts=True)
+        cy = f["Clusters"]["cy"][:]
+    cy = np.asarray(cy, dtype=float)
+    xs, counts = np.unique(cy, return_counts=True)
     return xs, counts.astype(np.int64)
 
 
 def histogramify_pixelhits(h5_path: Path) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Read ``PixelHits['x']`` from an HDF5 file.
+    Read ``PixelHits['y']`` from an HDF5 file.
 
     Returns ``(xs, counts)`` where *xs* is ``np.arange(256)`` (always 256
-    rows) and *counts* is the pixel-hit count at each x.  Bins with no hits
-    are 0.  y and time dimensions are collapsed.
+    rows) and *counts* is the pixel-hit count at each position.  Bins with no
+    hits are 0.  x and time dimensions are collapsed.
+
+    Note: tpx3dump's ``y`` (physical row) is the dispersive axis — see
+    ``histogramify_clusters`` for the rationale.
     """
     with h5py.File(h5_path, "r") as f:
-        x = f["PixelHits"]["x"][:]
-    x = np.asarray(x, dtype=int)
-    counts = np.bincount(x, minlength=256)[:256]
+        y = f["PixelHits"]["y"][:]
+    y = np.asarray(y, dtype=int)
+    counts = np.bincount(y, minlength=256)[:256]
     xs = np.arange(256, dtype=int)
     return xs, counts.astype(np.int64)
 
@@ -185,8 +197,8 @@ def _build_parser() -> argparse.ArgumentParser:
             histogramify — generate per-file CSV histograms from sweep .h5 outputs.
 
             Mode is auto-detected by filename:
-              *_PixelHits.h5  ->  PixelHits['x'], fixed bins 0..255 (column: PixelHits)
-              all others      ->  Clusters['cx'], unique float centroids (column: s=?&t=?)
+              *_PixelHits.h5  ->  PixelHits['y'], fixed bins 0..255 (column: PixelHits)
+              all others      ->  Clusters['cy'], unique centroids (column: s=?&t=?)
 
             Example:
               .venv/bin/python3.12 tools/centroider/histogramify.py

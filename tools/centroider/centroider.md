@@ -191,12 +191,20 @@ outputs.
 
 ## Phase 3 — Histogram CSVs
 
-### Why x-histograms
+### Why y-histograms (labelled "x" in output)
 
-We collapse the 2D cluster/hit data onto the **x-axis only**, producing a 1D
-histogram (counts vs. x position).  This gives a simple, fast-to-compute
-profile of the spatial distribution along x, suitable for comparing clustering
-parameter choices without handling full 2D arrays.
+We collapse the 2D cluster/hit data onto the **y-axis only** (tpx3dump column
+names ``cy`` / ``y``), producing a 1D histogram suitable for comparing
+clustering parameter choices without handling full 2D arrays.
+
+**Important — axis naming convention:** tpx3dump's ``y``/``cy`` column
+corresponds to the *dispersive* (physically horizontal) axis of the detector
+as mounted.  This is the axis that shows the expected two-peak structure from
+the beam.  Despite reading ``cy``/``y`` from the HDF5 file, the output CSV
+column is still named ``x`` and the plot axis is labelled accordingly, so that
+"x" consistently means "the spatial axis we care about" throughout the
+pipeline.  tpx3dump's ``x``/``cx`` column (physical column direction) is
+collapsed and discarded.
 
 ### Two histogram modes (auto-detected by filename)
 
