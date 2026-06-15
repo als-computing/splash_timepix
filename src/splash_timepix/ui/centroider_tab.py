@@ -194,23 +194,31 @@ class CentroiderTab(QWidget):
 
         # --- eps-t ---
         eps_t_row = QHBoxLayout()
-        eps_t_label = QLabel("eps-t (time)")
+        eps_t_label = QLabel("eps-t (ns)")
         eps_t_label.setMinimumWidth(110)
         eps_t_label.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
-        self._eps_t_input = QLineEdit("20ns,100ns,500ns")
-        self._eps_t_input.setPlaceholderText("comma-separated times in ns, e.g. 20ns,100ns,500ns")
+        self._eps_t_input = QLineEdit("20,100,500")
+        self._eps_t_input.setPlaceholderText("comma-separated integers in ns, e.g. 20,100,500")
         self._eps_t_input.setStyleSheet(theme.input_style())
         eps_t_row.addWidget(eps_t_label)
         eps_t_row.addWidget(self._eps_t_input, stretch=1)
         layout.addLayout(eps_t_row)
 
-        # --- Centroid button ---
+        # --- Centroid / Stop buttons ---
+        _BTN_WIDTH = 110
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         self._centroid_btn = QPushButton("Centroid")
+        self._centroid_btn.setFixedWidth(_BTN_WIDTH)
         self._centroid_btn.setStyleSheet(theme.button_style(theme.BUTTON_START))
         self._centroid_btn.clicked.connect(self._on_centroid_clicked)
         btn_row.addWidget(self._centroid_btn)
+        self._stop_btn = QPushButton("\u23f9 Stop")
+        self._stop_btn.setFixedWidth(_BTN_WIDTH)
+        self._stop_btn.setStyleSheet(theme.button_style(theme.BUTTON_STOP))
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self._on_stop_clicked)
+        btn_row.addWidget(self._stop_btn)
         layout.addLayout(btn_row)
 
         return group
@@ -327,7 +335,11 @@ class CentroiderTab(QWidget):
             self._file_input.setText(file_path)
 
     def _parse_eps_lists(self) -> Optional[Tuple[List[int], List[str]]]:
-        """Validate eps-s / eps-t via the centroider backend; show errors inline."""
+        """Validate eps-s / eps-t via the centroider backend; show errors inline.
+
+        The eps-t field accepts plain integers (e.g. ``20,100,500``); the ``ns``
+        suffix is appended here before validation so the user never has to type it.
+        """
         try:
             api = import_centroider_api()
         except Exception as exc:  # noqa: BLE001
@@ -335,7 +347,14 @@ class CentroiderTab(QWidget):
             return None
         try:
             eps_s = api._normalize_eps_s(self._eps_s_input.text())
-            eps_t = api._normalize_eps_t(self._eps_t_input.text())
+            # Append "ns" to each token so the user only enters bare integers.
+            raw_t = self._eps_t_input.text()
+            tokens_with_ns = ",".join(
+                t.strip() + "ns" if t.strip() and not t.strip().endswith("ns") else t.strip()
+                for t in raw_t.split(",")
+                if t.strip()
+            )
+            eps_t = api._normalize_eps_t(tokens_with_ns)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid parameters", str(exc))
             return None
@@ -373,6 +392,13 @@ class CentroiderTab(QWidget):
         self._worker.error_occurred.connect(self._on_error)
         self._worker.start()
 
+    def _on_stop_clicked(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._stop_btn.setEnabled(False)
+        self._status_label.setText("Stopping — waiting for tpx3dump to exit...")
+        self._worker.stop()
+
     # ------------------------------------------------------------------
     # Output / grid setup
     # ------------------------------------------------------------------
@@ -406,6 +432,7 @@ class CentroiderTab(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self._centroid_btn.setEnabled(not running)
+        self._stop_btn.setEnabled(running)
         self._file_input.setEnabled(not running)
         self._eps_s_input.setEnabled(not running)
         self._eps_t_input.setEnabled(not running)
@@ -449,11 +476,18 @@ class CentroiderTab(QWidget):
     @Slot(object)
     def _on_sweep_finished(self, result) -> None:
         self._set_running(False)
-        self._progress_bar.setValue(self._progress_bar.maximum())
         n_ok = sum(1 for r in result.results if r.status == "ok")
         n_failed = sum(1 for r in result.results if r.status == "failed")
         n_skipped = sum(1 for r in result.results if r.status == "skipped")
-        msg = f"Done. {n_ok} ok, {n_skipped} cached, {n_failed} failed. Output: {result.run_dir}"
+        n_cancelled = sum(1 for r in result.results if r.status == "cancelled")
+        was_cancelled = n_cancelled > 0 or (
+            self._worker is not None and self._worker._cancel_event.is_set()
+        )
+        if was_cancelled:
+            msg = f"Stopped. {n_ok} ok, {n_skipped} cached, {n_failed} failed, {n_cancelled} cancelled."
+        else:
+            self._progress_bar.setValue(self._progress_bar.maximum())
+            msg = f"Done. {n_ok} ok, {n_skipped} cached, {n_failed} failed. Output: {result.run_dir}"
         self._status_label.setText(msg)
         self._refresh_plot()
 
@@ -538,6 +572,8 @@ class CentroiderTab(QWidget):
     # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Stop the worker thread if running (called on app close)."""
+        """Stop the worker thread and any in-flight tpx3dump process (called on app close)."""
         if self._worker is not None and self._worker.isRunning():
-            self._worker.wait(2000)
+            self._worker.stop()
+            # Give tpx3dump up to 5 s to die (SIGTERM + SIGKILL already handled in runner).
+            self._worker.wait(5000)

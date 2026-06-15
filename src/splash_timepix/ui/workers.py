@@ -6,6 +6,7 @@ Workers communicate with the UI via Qt signals to ensure thread safety.
 import importlib.util
 import logging
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -579,8 +580,14 @@ class CentroiderWorker(QThread):
         self._eps_t = eps_t
         self._tpx3dump = tpx3dump
         self._output_parent = output_parent
+        self._cancel_event = threading.Event()
+
+    def stop(self) -> None:
+        """Signal the sweep and any in-flight tpx3dump process to stop."""
+        self._cancel_event.set()
 
     def run(self) -> None:
+        self._cancel_event.clear()
         try:
             api = import_centroider_api()
         except Exception as exc:  # noqa: BLE001
@@ -607,6 +614,7 @@ class CentroiderWorker(QThread):
                 eps_s_list=self._eps_s,
                 tpx3dump=self._tpx3dump,
                 progress_callback=_callback,
+                cancel_event=self._cancel_event,
             )
         except Exception as exc:  # noqa: BLE001
             self.error_occurred.emit(str(exc))
