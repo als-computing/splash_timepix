@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,14 +56,19 @@ from runner import Combo, RunResult, run_one  # noqa: E402
 # long-lived process can handle bad input gracefully).
 # ---------------------------------------------------------------------------
 
-_VALID_UNIT_RE = re.compile(r"^[0-9]+(\.[0-9]+)?(s|ms|us|ns|ps|fs)$")
+_VALID_UNIT_RE = re.compile(r"^[0-9]+(\.[0-9]+)?ns$")
 
 EpsT = Union[str, Sequence[str]]
 EpsS = Union[str, Sequence[Union[str, int]]]
 
 
 def _normalize_eps_t(value: EpsT) -> List[str]:
-    """Accept a comma-separated string or a sequence; return validated tokens."""
+    """Accept a comma-separated string or a sequence; return validated tokens.
+
+    Only nanosecond values are accepted (e.g. ``20ns``, ``100ns``). Larger
+    units (ms, s, …) would make each tpx3dump run impractically slow, so they
+    are rejected explicitly.
+    """
     if isinstance(value, str):
         tokens = [t.strip() for t in value.split(",") if t.strip()]
     else:
@@ -73,7 +79,7 @@ def _normalize_eps_t(value: EpsT) -> List[str]:
     if bad:
         raise ValueError(
             f"Invalid eps-t value(s): {bad}. "
-            "Expected <number><unit>, e.g. 100ns, 0.5ms, 1s (units: s, ms, us, ns, ps, fs)"
+            "Only nanosecond values are accepted, e.g. 20ns, 100ns, 500ns"
         )
     return tokens
 
@@ -159,6 +165,8 @@ class _EtaTracker:
             self._completed += 1
         elif status == "skipped":
             self._skipped += 1
+        elif status == "cancelled":
+            pass  # Don't count cancelled runs against ETA
         else:
             self._failed += 1
 
@@ -189,6 +197,7 @@ def run_sweep(
     keep_going: bool = True,
     keep_pixel_data: bool = False,
     log_level: str = "warn",
+    cancel_event: Optional[threading.Event] = None,
 ) -> SweepResult:
     """Run tpx3dump over every (eps-t, eps-s) combo, reporting progress in-process.
 
@@ -293,8 +302,16 @@ def run_sweep(
 
     index = 0
 
+    def _is_cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     # ---- Phase 1: clustered conversions ----
     for combo in combos:
+        if _is_cancelled():
+            _sweep._write_summary(results, run_dir)
+            _emit(ProgressEvent(index=index, total=total, label="cancelled", phase="done", status="cancelled"))
+            return SweepResult(run_dir=run_dir, results=results, baseline_h5=None)
+
         index += 1
         label = f"s={combo.eps_s}&t={combo.eps_t}"
         _begin(index, label, "clustered", combo.eps_t, combo.eps_s)
@@ -310,10 +327,16 @@ def run_sweep(
             input_file=input_file,
             log_level=log_level,
             extra_args=clustered_extra,
+            cancel_event=cancel_event,
         )
         results.append(result)
         produced = combo.output_file if result.status in ("ok", "skipped") else None
         _finish(index, label, "clustered", combo.eps_t, combo.eps_s, result.status, result.wall_seconds, produced)
+
+        if result.status == "cancelled":
+            _sweep._write_summary(results, run_dir)
+            _emit(ProgressEvent(index=index, total=total, label="cancelled", phase="done", status="cancelled"))
+            return SweepResult(run_dir=run_dir, results=results, baseline_h5=None)
 
         if result.status == "failed" and not keep_going:
             _sweep._write_summary(results, run_dir)
@@ -322,6 +345,11 @@ def run_sweep(
 
     # ---- Phase 2: PixelHits baseline ----
     if run_baseline:
+        if _is_cancelled():
+            _sweep._write_summary(results, run_dir)
+            _emit(ProgressEvent(index=index, total=total, label="cancelled", phase="done", status="cancelled"))
+            return SweepResult(run_dir=run_dir, results=results, baseline_h5=None)
+
         index += 1
         baseline_combo = Combo(eps_t=None, eps_s=None, output_file=baseline_h5)
         label = "PixelHits baseline"
@@ -337,10 +365,16 @@ def run_sweep(
                 input_file=input_file,
                 log_level=log_level,
                 extra_args=baseline_extra,
+                cancel_event=cancel_event,
             )
             results.append(result)
             produced = baseline_h5 if result.status in ("ok", "skipped") else None
             _finish(index, label, "baseline", None, None, result.status, result.wall_seconds, produced)
+
+            if result.status == "cancelled":
+                _sweep._write_summary(results, run_dir)
+                _emit(ProgressEvent(index=index, total=total, label="cancelled", phase="done", status="cancelled"))
+                return SweepResult(run_dir=run_dir, results=results, baseline_h5=None)
 
     _sweep._write_summary(results, run_dir)
 

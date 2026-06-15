@@ -4,8 +4,11 @@ Run a single tpx3dump process invocation and capture timing + outcome.
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,29 +69,60 @@ def build_command(
     return cmd
 
 
+def _kill_proc_group(proc: subprocess.Popen) -> None:
+    """Terminate the process group (SIGTERM then SIGKILL). Falls back to plain
+    terminate/kill when the process group cannot be resolved (e.g. already dead)."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        # Give the process group up to 3 s to exit gracefully.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.05)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        # Process already gone, or pgid lookup failed — try direct signals.
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
 def run_one(
     tpx3dump: Path,
     combo: Combo,
     input_file: Path,
     log_level: str = "info",
     extra_args: Optional[List[str]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> RunResult:
     """
     Execute one tpx3dump conversion and return a RunResult.
 
     Stdout + stderr are captured (tpx3dump writes its log to stderr).
-    The wall-clock time is measured around subprocess.run; the tpx3dump-
+    The wall-clock time is measured around the subprocess; the tpx3dump-
     reported time (from 'Full tpx3dump run took Xs') is also parsed when
     available, as it excludes Python / subprocess overhead.
+
+    If *cancel_event* is set while the process is running the process group
+    is killed and a ``RunResult`` with ``status="cancelled"`` is returned.
     """
     cmd = build_command(tpx3dump, combo, input_file, log_level, extra_args)
 
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,  # own process group so we can kill it cleanly
         )
     except OSError as exc:
         return RunResult(
@@ -100,10 +134,34 @@ def run_one(
             error_message=str(exc),
         )
 
+    # Poll until the process finishes or the cancel_event fires.
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            _kill_proc_group(proc)
+            stdout, stderr = proc.communicate()
+            # Remove the partially-written output file — it will be corrupted.
+            try:
+                if combo.output_file.exists():
+                    combo.output_file.unlink()
+            except OSError:
+                pass
+            return RunResult(
+                combo=combo,
+                status="cancelled",
+                exit_code=proc.returncode or -1,
+                wall_seconds=time.monotonic() - t0,
+                command=cmd,
+                stdout=stdout or "",
+                stderr=stderr or "",
+                error_message="Cancelled by user",
+            )
+        time.sleep(0.05)
+
+    stdout, stderr = proc.communicate()
     wall = time.monotonic() - t0
 
     # tpx3dump writes its log lines to stderr
-    combined_log = proc.stderr + proc.stdout
+    combined_log = (stderr or "") + (stdout or "")
     reported = _parse_reported_time(combined_log)
 
     output_bytes = 0
@@ -114,7 +172,7 @@ def run_one(
     error_message = ""
     if proc.returncode != 0:
         # Surface the last few lines of stderr as the error summary
-        last_lines = proc.stderr.strip().splitlines()
+        last_lines = (stderr or "").strip().splitlines()
         error_message = "\n".join(last_lines[-5:]) if last_lines else "non-zero exit"
 
     return RunResult(
@@ -124,8 +182,8 @@ def run_one(
         wall_seconds=wall,
         reported_seconds=reported,
         output_bytes=output_bytes,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
+        stdout=stdout or "",
+        stderr=stderr or "",
         error_message=error_message,
         command=cmd,
     )
