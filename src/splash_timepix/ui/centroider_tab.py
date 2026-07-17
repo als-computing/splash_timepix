@@ -197,7 +197,7 @@ class CentroiderTab(QWidget):
         eps_t_label = QLabel("eps-t (ns)")
         eps_t_label.setMinimumWidth(110)
         eps_t_label.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
-        self._eps_t_input = QLineEdit("20,100,500")
+        self._eps_t_input = QLineEdit("5,10,20")
         self._eps_t_input.setPlaceholderText("comma-separated integers in ns, e.g. 20,100,500")
         self._eps_t_input.setStyleSheet(theme.input_style())
         eps_t_row.addWidget(eps_t_label)
@@ -480,9 +480,7 @@ class CentroiderTab(QWidget):
         n_failed = sum(1 for r in result.results if r.status == "failed")
         n_skipped = sum(1 for r in result.results if r.status == "skipped")
         n_cancelled = sum(1 for r in result.results if r.status == "cancelled")
-        was_cancelled = n_cancelled > 0 or (
-            self._worker is not None and self._worker._cancel_event.is_set()
-        )
+        was_cancelled = n_cancelled > 0 or (self._worker is not None and self._worker._cancel_event.is_set())
         if was_cancelled:
             msg = f"Stopped. {n_ok} ok, {n_skipped} cached, {n_failed} failed, {n_cancelled} cancelled."
         else:
