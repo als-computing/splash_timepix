@@ -20,7 +20,14 @@ from unittest.mock import patch
 # ---------------------------------------------------------------------------
 # Minimal QCoreApplication — must be created before any QObject
 # ---------------------------------------------------------------------------
-from PySide6.QtCore import QCoreApplication
+import pytest
+
+pytest.importorskip(
+    "PySide6",
+    reason="PySide6 (ui extra) not installed; LogManager tests need QtCore",
+)
+
+from PySide6.QtCore import QCoreApplication  # noqa: E402
 
 _qapp = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])
 
