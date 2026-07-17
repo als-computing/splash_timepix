@@ -186,6 +186,30 @@ class SocketDataServer:
         """Block until a client disconnects."""
         return self.client_disconnected_event.wait(timeout=timeout)
 
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        """Block until every batch currently in ``message_queue`` has been processed.
+
+        The data processor calls ``message_queue.task_done()`` after each
+        batch returns from ``data_callback``, so when ``unfinished_tasks``
+        reaches zero we know the callback has been invoked for every batch
+        the socket reader put in.
+
+        Intended to be called *after* ``_handle_client`` has exited (i.e.
+        the client has disconnected and no further batches will be put);
+        otherwise this can wait indefinitely for new producer activity.
+
+        Returns:
+            True if the queue drained within ``timeout``, False on timeout.
+        """
+        deadline = time.monotonic() + timeout
+        with self.message_queue.all_tasks_done:
+            while self.message_queue.unfinished_tasks > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.message_queue.all_tasks_done.wait(timeout=remaining)
+        return True
+
     def _socket_listener(self) -> None:
         """Thread that listens for connections and reads data."""
         try:

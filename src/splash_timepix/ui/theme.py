@@ -158,9 +158,35 @@ def input_style() -> str:
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
             border-color: {BLUE_PRIMARY};
         }}
+        QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+            background-color: {BG_BUTTON_GROUP};
+            color: {TEXT_MUTED};
+            border-color: {BORDER_SUBTLE};
+        }}
     """
 
 
 def heatmap_background_style() -> str:
     """Style for heatmap display area."""
     return f"background-color: {BG_DARK}; border: 1px solid {BORDER_SUBTLE};"
+
+
+def checkable_button_style() -> str:
+    """Style for mutually-exclusive checkable tool buttons (e.g. zoom modes)."""
+    return f"""
+        QPushButton {{
+            background-color: {BG_WIDGET};
+            color: {TEXT_PRIMARY};
+            padding: 6px 12px;
+            border: 1px solid {BORDER_DEFAULT};
+            border-radius: 4px;
+        }}
+        QPushButton:checked {{
+            background-color: {BLUE_LIGHT_2};
+            color: white;
+            border: 1px solid {BLUE_LIGHT_2};
+        }}
+        QPushButton:hover:!checked {{
+            background-color: {BG_BUTTON_GROUP};
+        }}
+    """

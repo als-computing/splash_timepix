@@ -12,11 +12,14 @@ Usage:
     result = parser.parse_batch(data_bytes)  # BatchParseResult with NumPy arrays
 """
 
+import logging
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Union
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Constants for time conversions
 TIMESTAMP_CLOCK_MHZ = 3840
@@ -218,13 +221,14 @@ class PacketParser:
         elif packet_type == PacketType.CONTROL:
             return self._parse_control(packet_type, timestamp, packet_specific)
         else:
+            logger.debug("Unknown packet type %d in 12-byte packet, returning None", packet_type)
             return None
 
     def _parse_pixel(self, packet_type: int, timestamp: int, specific_data: int) -> PixelPacket:
         reserved = specific_data & 0x3F
-        # Wire format: reserved(0-5) | y(6-15) | x(16-25) | tot(26-35)
-        y = (specific_data >> 6) & 0x3FF
-        x = (specific_data >> 16) & 0x3FF
+        # Wire format: reserved(0-5) | x(6-15) | y(16-25) | tot(26-35)
+        x = (specific_data >> 6) & 0x3FF
+        y = (specific_data >> 16) & 0x3FF
         tot = (specific_data >> 26) & 0x3FF
         return PixelPacket(
             packet_type=packet_type,
@@ -291,6 +295,14 @@ class PacketParser:
             return self._empty_result()
 
         # Trim to exact multiple of packet size
+        remainder = len(data) % self.packet_size
+        if remainder != 0:
+            logger.warning(
+                "parse_batch: received %d bytes, not a multiple of %d; trimming %d trailing byte(s)",
+                len(data),
+                self.packet_size,
+                remainder,
+            )
         data = data[: n_packets * self.packet_size]
 
         # Convert to numpy array and reshape to (n_packets, 12)
@@ -354,8 +366,8 @@ class PacketParser:
         pixel_specific = specific[pixel_mask]
         pixel_timestamps = timestamps[pixel_mask]
 
-        pixel_y = ((pixel_specific >> 6) & 0x3FF).astype(np.int32)
-        pixel_x = ((pixel_specific >> 16) & 0x3FF).astype(np.int32)
+        pixel_x = ((pixel_specific >> 6) & 0x3FF).astype(np.int32)
+        pixel_y = ((pixel_specific >> 16) & 0x3FF).astype(np.int32)
         pixel_tot = ((pixel_specific >> 26) & 0x3FF).astype(np.int32)
 
         # ---- EXTRACT TDC FIELDS ----
@@ -373,11 +385,19 @@ class PacketParser:
 
         control_subtype = ((control_specific >> 32) & 0xF).astype(np.uint8)
 
+        n_unknown = int(np.sum(unknown_mask))
+        if n_unknown > 0:
+            logger.warning(
+                "parse_batch: %d unknown/invalid packet(s) in batch of %d",
+                n_unknown,
+                n_packets,
+            )
+
         return BatchParseResult(
             n_pixels=len(pixel_indices),
             n_tdc=len(tdc_indices),
             n_control=len(control_indices),
-            n_unknown=int(np.sum(unknown_mask)),
+            n_unknown=n_unknown,
             pixel_x=pixel_x,
             pixel_y=pixel_y,
             pixel_timestamp=pixel_timestamps,

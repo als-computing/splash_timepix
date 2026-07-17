@@ -15,3 +15,10 @@ venv/
 
 # ASI application logs
 ASI/logs/
+
+# Large ASI binary (144 MB) — exceeds GitHub's 100 MB push limit.
+# Distributed as ASI/tpx3dump.zip instead; keep the raw binary out of git.
+ASI/tpx3dump
+
+# UI subsystem logs (written by LogManager)
+logs/

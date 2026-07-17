@@ -2,8 +2,10 @@
 
 import json
 import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal, Slot
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -23,8 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import theme
-from .widgets import HeatmapWidget, StatusIndicator, get_colormap
+from . import preferences, theme
+from .widgets import CURSOR_COLORS, HeatmapWidget, SpectrumPlotWidget, StatusIndicator, VerticalLabel, get_colormap
 from .workers import FlushData, HeartbeatStatus, ServalStatus
 
 logger = logging.getLogger(__name__)
@@ -77,8 +80,15 @@ class OperatorTab(QWidget):
         self._cumulative_sum: Optional[np.ndarray] = None
         self._total_cycles = 0
         self._flush_count = 0
+        self._last_avg_2d: Optional[np.ndarray] = None  # most recent averaged heatmap data
+        self._n_energy: Optional[int] = None  # number of energy pixels in current data
 
         self._setup_ui()
+        try:
+            self.load_operator_preferences()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Failed to load operator preferences; using widget defaults")
+        self._refresh_mode_buttons_state()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -152,7 +162,7 @@ class OperatorTab(QWidget):
         view_layout.setContentsMargins(8, 6, 8, 6)
         view_layout.setSpacing(8)
 
-        cmap_label = QLabel("Colormap:")
+        cmap_label = QLabel("Colormap")
         cmap_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         view_layout.addWidget(cmap_label)
 
@@ -162,12 +172,63 @@ class OperatorTab(QWidget):
         self._colormap_combo.currentTextChanged.connect(self._on_colormap_changed)
         view_layout.addWidget(self._colormap_combo)
 
+        cmap_sep = QFrame()
+        cmap_sep.setFrameShape(QFrame.Shape.VLine)
+        cmap_sep.setFixedWidth(1)
+        cmap_sep.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
+        view_layout.addWidget(cmap_sep)
+
+        self._vcursor_heatmap_btn = QPushButton("| Cursors")
+        self._vcursor_heatmap_btn.setCheckable(True)
+        self._vcursor_heatmap_btn.setChecked(True)
+        self._vcursor_heatmap_btn.setStyleSheet(theme.checkable_button_style())
+        self._vcursor_heatmap_btn.setToolTip("Show/hide energy cursor lines in both heatmaps")
+        self._vcursor_heatmap_btn.toggled.connect(self._on_vcursor_heatmap_toggled)
+        view_layout.addWidget(self._vcursor_heatmap_btn)
+
         view_layout.addSpacing(12)
 
-        self._reset_avg_btn = QPushButton("Reset Avg")
-        self._reset_avg_btn.setStyleSheet(theme.secondary_button_style())
-        self._reset_avg_btn.clicked.connect(self._reset_average)
-        view_layout.addWidget(self._reset_avg_btn)
+        # Zoom button group
+        zoom_group = QFrame()
+        zoom_group.setStyleSheet(
+            f"QFrame {{ border: 1px solid {theme.BORDER_SUBTLE}; border-radius: 4px;"
+            f" background-color: {theme.BG_DARK}; }}"
+        )
+        zoom_layout = QHBoxLayout(zoom_group)
+        zoom_layout.setContentsMargins(2, 2, 2, 2)
+        zoom_layout.setSpacing(2)
+
+        self._zoom_rect_btn = QPushButton("⊞ Zoom")
+        self._zoom_rect_btn.setCheckable(True)
+        self._zoom_rect_btn.setChecked(True)
+        self._zoom_rect_btn.setStyleSheet(theme.checkable_button_style())
+        self._zoom_rect_btn.clicked.connect(lambda: self._set_zoom_mode("rect"))
+        zoom_layout.addWidget(self._zoom_rect_btn)
+
+        self._zoom_h_btn = QPushButton("↔ Hor")
+        self._zoom_h_btn.setCheckable(True)
+        self._zoom_h_btn.setStyleSheet(theme.checkable_button_style())
+        self._zoom_h_btn.clicked.connect(lambda: self._set_zoom_mode("h"))
+        zoom_layout.addWidget(self._zoom_h_btn)
+
+        self._zoom_v_btn = QPushButton("↕ Ver")
+        self._zoom_v_btn.setCheckable(True)
+        self._zoom_v_btn.setStyleSheet(theme.checkable_button_style())
+        self._zoom_v_btn.clicked.connect(lambda: self._set_zoom_mode("v"))
+        zoom_layout.addWidget(self._zoom_v_btn)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
+        zoom_layout.addWidget(sep)
+
+        self._reset_view_btn = QPushButton("⟳ Reset")
+        self._reset_view_btn.setStyleSheet(theme.checkable_button_style())
+        self._reset_view_btn.clicked.connect(self._reset_view)
+        zoom_layout.addWidget(self._reset_view_btn)
+
+        view_layout.addWidget(zoom_group)
 
         top_layout.addWidget(view_group)
         top_layout.addStretch()
@@ -214,7 +275,7 @@ class OperatorTab(QWidget):
         )
         # TDC Frequency
         tdc_row = QHBoxLayout()
-        tdc_label = QLabel("TDC Frequency (Hz):")
+        tdc_label = QLabel("TDC Frequency (Hz)")
         tdc_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         tdc_label.setToolTip(_tt_tdc_freq)
         tdc_row.addWidget(tdc_label)
@@ -233,7 +294,7 @@ class OperatorTab(QWidget):
         )
         # TDC Channel
         tdc_ch_row = QHBoxLayout()
-        tdc_ch_label = QLabel("TDC Channel:")
+        tdc_ch_label = QLabel("TDC Channel")
         tdc_ch_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         tdc_ch_label.setToolTip(_tt_tdc_ch)
         tdc_ch_row.addWidget(tdc_ch_label)
@@ -247,7 +308,7 @@ class OperatorTab(QWidget):
         _tt_tdc_edge = "Trigger on the rising or falling edge of the selected TDC line."
         # TDC Edge
         tdc_edge_row = QHBoxLayout()
-        tdc_edge_label = QLabel("TDC Edge:")
+        tdc_edge_label = QLabel("TDC Edge")
         tdc_edge_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         tdc_edge_label.setToolTip(_tt_tdc_edge)
         tdc_edge_row.addWidget(tdc_edge_label)
@@ -260,7 +321,7 @@ class OperatorTab(QWidget):
 
         # Parse batch size (CLI --callback-batch-size): packets per vectorized parse_batch call
         batch_row = QHBoxLayout()
-        batch_label = QLabel("Parse batch (pkts):")
+        batch_label = QLabel("Parse batch (pkts)")
         batch_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         batch_label.setToolTip(
             "Target number of 12-byte packets per parse batch (vectorized parse_batch). "
@@ -277,13 +338,31 @@ class OperatorTab(QWidget):
         batch_row.addWidget(self._callback_batch_input)
         settings_layout.addLayout(batch_row)
 
+        # n_bins
+        n_bins_row = QHBoxLayout()
+        n_bins_label = QLabel("Time bins (n_bins)")
+        n_bins_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        n_bins_label.setToolTip(
+            "Number of time bins per TDC cycle. Used as the fallback when the streaming server "
+            "cannot derive bin count from t_delta_ns. Default: 10000."
+        )
+        n_bins_row.addWidget(n_bins_label)
+        self._n_bins_input = QSpinBox()
+        self._n_bins_input.setRange(500, 50_000)
+        self._n_bins_input.setValue(10_000)
+        self._n_bins_input.setSingleStep(10)
+        self._n_bins_input.setStyleSheet(theme.input_style())
+        self._n_bins_input.setToolTip(n_bins_label.toolTip())
+        n_bins_row.addWidget(self._n_bins_input)
+        settings_layout.addLayout(n_bins_row)
+
         _tt_duration = (
             "Acquisition length in seconds for Serval-backed runs and the simulator. "
             "Preview and replay may ignore this depending on the workflow."
         )
         # Duration
         dur_row = QHBoxLayout()
-        dur_label = QLabel("Duration (s):")
+        dur_label = QLabel("Duration (s)")
         dur_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         dur_label.setToolTip(_tt_duration)
         dur_row.addWidget(dur_label)
@@ -301,7 +380,7 @@ class OperatorTab(QWidget):
         )
         # Output directory
         out_row = QHBoxLayout()
-        out_label = QLabel("Output:")
+        out_label = QLabel("Output")
         out_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         out_label.setToolTip(_tt_output_label)
         out_row.addWidget(out_label)
@@ -343,7 +422,7 @@ class OperatorTab(QWidget):
         pipeline_group.setToolTip(
             "Live depth vs capacity. Packet buffer fills when the parse thread cannot keep up with TCP—"
             "try lowering Parse batch (pkts) or increasing buffer-size on the server. "
-            "ZMQ PUB (SUB): 3D flush depth (publisher); value in parentheses is the start/stop control queue."
+            "ZMQ PUB (SUB) shows 3D flush depth (publisher); value in parentheses is the start/stop control queue."
         )
         pipeline_layout = QVBoxLayout(pipeline_group)
         pipeline_layout.setSpacing(4)
@@ -351,13 +430,13 @@ class OperatorTab(QWidget):
         queue_rows = [
             (
                 "packet_buffer",
-                "Packet buffer:",
+                "Packet buffer",
                 "Queued raw TCP batches waiting for the parser thread (SocketDataServer message queue). "
                 "Fills if parsing lags behind the network reader.",
             ),
             (
                 "zmq_pub",
-                "ZMQ PUB (SUB):",
+                "ZMQ PUB (SUB)",
                 "3D flush queue (PUB path) and control queue depth in parentheses; "
                 "denominator is flush-queue capacity.",
             ),
@@ -385,12 +464,12 @@ class OperatorTab(QWidget):
 
         self._stats_labels = {}
         stat_names = [
-            ("pixel_rate", "Pixel Rate:"),
-            ("tdc1_rate", "TDC1 Rate:"),
-            ("tdc2_rate", "TDC2 Rate:"),
-            ("elapsed_remaining", "Elapsed / Remaining:"),
-            ("flushes_cycles", "Flushes (Cycles):"),
-            ("avg_counts", "Avg Counts/Cycle:"),
+            ("pixel_rate", "Pixel Rate"),
+            ("tdc1_rate", "TDC1 Rate"),
+            ("tdc2_rate", "TDC2 Rate"),
+            ("elapsed_remaining", "Elapsed / Remaining"),
+            ("flushes_cycles", "Flushes (Cycles)"),
+            ("avg_counts", "Avg Counts/Cycle"),
         ]
 
         for key, label in stat_names:
@@ -410,17 +489,242 @@ class OperatorTab(QWidget):
 
         content_layout.addWidget(left_panel)
 
-        # Heatmaps
+        # Heatmaps + spectrum panel
         right_panel = QWidget()
         right_layout = QHBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
 
-        self._current_heatmap = HeatmapWidget("Current Flush")
-        self._average_heatmap = HeatmapWidget("Running Average")
+        # Both heatmap columns use the same structure: heatmap (expanding) + bottom row (fixed).
+        # _SPECTRUM_ROW_H is shared so the two HeatmapWidgets always have equal height.
+        _SPECTRUM_ROW_H = 210
 
-        right_layout.addWidget(self._current_heatmap)
-        right_layout.addWidget(self._average_heatmap)
+        # Current Flush column: heatmap + cursor-readout / calibration panel
+        flush_col = QWidget()
+        flush_col_layout = QVBoxLayout(flush_col)
+        flush_col_layout.setContentsMargins(0, 0, 0, 0)
+        flush_col_layout.setSpacing(0)
+        self._current_heatmap = HeatmapWidget("Current Flush")
+        flush_col_layout.addWidget(self._current_heatmap)
+
+        # --- Cursor readout + calibration panel ---
+        readout_panel = QFrame()
+        readout_panel.setFixedHeight(_SPECTRUM_ROW_H)
+        readout_panel.setStyleSheet(
+            f"QFrame {{ background-color: {theme.BG_PANEL}; "
+            f"border: 1px solid {theme.BORDER_SUBTLE}; border-radius: 4px; }}"
+        )
+        rp_outer = QHBoxLayout(readout_panel)
+        rp_outer.setContentsMargins(0, 0, 0, 0)
+        rp_outer.setSpacing(0)
+
+        # Left 2/3: calibration controls + cursor readout
+        rp_left = QWidget()
+        rp_layout = QVBoxLayout(rp_left)
+        rp_layout.setContentsMargins(10, 8, 8, 8)
+        rp_layout.setSpacing(4)
+
+        # Vertical divider between left and right sections
+        sep_v = QFrame()
+        sep_v.setFrameShape(QFrame.Shape.VLine)
+        sep_v.setFixedWidth(1)
+        sep_v.setStyleSheet(f"background-color: {theme.BORDER_SUBTLE}; border: none;")
+
+        # Right 1/3: ROI pair legend + active toggle buttons
+        rp_right = QWidget()
+        rp_right_layout = QVBoxLayout(rp_right)
+        rp_right_layout.setContentsMargins(8, 6, 8, 6)
+        rp_right_layout.setSpacing(4)
+
+        _ROI_LABELS = ("ROI 1", "ROI 2", "ROI 3", "ROI 4", "ROI 5")
+        self._roi_toggle_btns: list[QPushButton] = []
+
+        _toggle_style = f"""
+            QPushButton {{
+                background-color: {theme.GREY_DARK};
+                color: {theme.TEXT_MUTED};
+                border: 1px solid {theme.BORDER_SUBTLE};
+                border-radius: 3px;
+                padding: 1px 4px;
+                font-size: 10px;
+            }}
+            QPushButton:checked {{
+                background-color: {theme.BLUE_PRIMARY};
+                color: {theme.TEXT_PRIMARY};
+                border-color: {theme.BLUE_LIGHT_2};
+            }}
+        """
+
+        for i in range(5):
+            roi_row = QHBoxLayout()
+            roi_row.setSpacing(6)
+
+            swatch = QLabel()
+            swatch.setFixedSize(16, 3)
+            swatch.setStyleSheet(f"background-color: {CURSOR_COLORS[i]}; border: none;")
+            roi_row.addWidget(swatch, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            lbl = QLabel(_ROI_LABELS[i])
+            lbl.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
+            roi_row.addWidget(lbl)
+            roi_row.addStretch()
+
+            active_default = i < 2
+            btn = QPushButton("On" if active_default else "Off")
+            btn.setCheckable(True)
+            btn.setChecked(active_default)
+            btn.setFixedWidth(36)
+            btn.setStyleSheet(_toggle_style)
+            roi_row.addWidget(btn)
+            rp_right_layout.addLayout(roi_row)
+            self._roi_toggle_btns.append(btn)
+
+        rp_right_layout.addStretch()
+
+        rp_outer.addWidget(rp_left, stretch=2)
+        rp_outer.addWidget(sep_v)
+        rp_outer.addWidget(rp_right, stretch=1)
+
+        # Calibration controls: label above each spinbox, the two controls side by side
+        cal_row = QHBoxLayout()
+        cal_row.setSpacing(8)
+
+        pxev_col = QVBoxLayout()
+        pxev_col.setSpacing(2)
+        ev_px_lbl = QLabel("pixel/eV")
+        ev_px_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+        pxev_col.addWidget(ev_px_lbl)
+        self._pixel_per_ev = QDoubleSpinBox()
+        self._pixel_per_ev.setRange(-10000.0, 10000.0)
+        self._pixel_per_ev.setDecimals(4)
+        self._pixel_per_ev.setValue(12.796)
+        self._pixel_per_ev.setSingleStep(0.001)
+        self._pixel_per_ev.setStyleSheet(theme.input_style())
+        self._pixel_per_ev.setFixedWidth(90)
+        pxev_col.addWidget(self._pixel_per_ev)
+        cal_row.addLayout(pxev_col)
+
+        evmid_col = QVBoxLayout()
+        evmid_col.setSpacing(2)
+        ev_mid_lbl = QLabel("eV @ midpoint")
+        ev_mid_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
+        evmid_col.addWidget(ev_mid_lbl)
+        self._ev_at_mid = QDoubleSpinBox()
+        self._ev_at_mid.setRange(-1_000_000.0, 1_000_000.0)
+        self._ev_at_mid.setDecimals(2)
+        self._ev_at_mid.setValue(0.0)
+        self._ev_at_mid.setSingleStep(0.1)
+        self._ev_at_mid.setStyleSheet(theme.input_style())
+        self._ev_at_mid.setFixedWidth(90)
+        evmid_col.addWidget(self._ev_at_mid)
+        cal_row.addLayout(evmid_col)
+        cal_row.addStretch()
+        rp_layout.addLayout(cal_row)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {theme.BORDER_SUBTLE};")
+        rp_layout.addWidget(sep)
+
+        # Readout grid: columns = name | pixel | eV
+        grid = QGridLayout()
+        grid.setSpacing(2)
+        grid.setColumnStretch(0, 2)
+        grid.setColumnStretch(1, 3)
+        grid.setColumnStretch(2, 3)
+
+        for col, text in enumerate(["", "Pixel", "eV"]):
+            hdr = QLabel(text)
+            hdr.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 9px;")
+            hdr.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(hdr, 0, col)
+
+        self._cursor_px_labels: list[QLabel] = []
+        self._cursor_ev_labels: list[QLabel] = []
+        row_names = ["Cursor A", "Cursor B", "Δ"]
+        for row_idx, name in enumerate(row_names):
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 9px;")
+            grid.addWidget(name_lbl, row_idx + 1, 0)
+
+            px_lbl = QLabel("--")
+            px_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY};")
+            px_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(px_lbl, row_idx + 1, 1)
+            self._cursor_px_labels.append(px_lbl)
+
+            ev_lbl = QLabel("--")
+            ev_lbl.setStyleSheet(f"font-family: monospace; color: {theme.TEXT_PRIMARY};")
+            ev_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(ev_lbl, row_idx + 1, 2)
+            self._cursor_ev_labels.append(ev_lbl)
+
+        rp_layout.addLayout(grid)
+        rp_layout.addStretch()
+
+        self._pixel_per_ev.valueChanged.connect(self._update_cursor_readout)
+        self._ev_at_mid.valueChanged.connect(self._update_cursor_readout)
+        self._pixel_per_ev.valueChanged.connect(self._update_ruler_energy_scale)
+        self._ev_at_mid.valueChanged.connect(self._update_ruler_energy_scale)
+
+        flush_col_layout.addWidget(readout_panel)
+        right_layout.addWidget(flush_col)
+
+        # Running Average column: heatmap + spectrum panel
+        avg_col = QWidget()
+        avg_col_layout = QVBoxLayout(avg_col)
+        avg_col_layout.setContentsMargins(0, 0, 0, 0)
+        avg_col_layout.setSpacing(0)
+
+        self._average_heatmap = HeatmapWidget("Running Average")
+        self._average_heatmap.enable_cursors(True)
+        self._average_heatmap.cursors_changed.connect(self._on_cursor_changed)
+        avg_col_layout.addWidget(self._average_heatmap)
+
+        # Spectrum wrapper — left spacer matches HeatmapWidget's y-label (20 px + 4 px spacing)
+        # so the plot x-axis aligns with the heatmap image area.
+        spectrum_outer = QWidget()
+        spectrum_outer.setFixedHeight(_SPECTRUM_ROW_H)
+        so_layout = QHBoxLayout(spectrum_outer)
+        so_layout.setContentsMargins(4, 4, 4, 4)
+        so_layout.setSpacing(4)
+        y_counts_label = VerticalLabel("Counts")
+        y_counts_label.setFixedWidth(20)
+        so_layout.addWidget(y_counts_label)
+        self._spectrum_plot = SpectrumPlotWidget()
+        self._spectrum_plot.cursors_changed.connect(self._on_spectrum_cursors_changed)
+        so_layout.addWidget(self._spectrum_plot)
+        avg_col_layout.addWidget(spectrum_outer)
+
+        self._current_heatmap.view_changed.connect(self._average_heatmap.set_view)
+        self._average_heatmap.view_changed.connect(self._current_heatmap.set_view)
+        # Zoom on either heatmap must refresh the spectrum/readout because
+        # cursor fractions are remapped through the current view.  Note that
+        # set_view does not re-emit view_changed, so we connect both signals.
+        self._current_heatmap.view_changed.connect(self._on_heatmap_view_changed)
+        self._average_heatmap.view_changed.connect(self._on_heatmap_view_changed)
+        right_layout.addWidget(avg_col)
+
+        # Wire ROI toggle buttons now that both heatmap and spectrum plot exist
+        for _i, _btn in enumerate(self._roi_toggle_btns):
+
+            def _make_toggle(pair_idx, button):
+                def handler(checked):
+                    button.setText("On" if checked else "Off")
+                    self._average_heatmap.set_cursor_pair_active(pair_idx, checked)
+                    self._spectrum_plot.set_pair_active(pair_idx, checked)
+                    self._sync_cursor_overlay()
+
+                return handler
+
+            _btn.toggled.connect(_make_toggle(_i, _btn))
+
+        self._average_heatmap.cursors_changed.connect(lambda *_: self._sync_cursor_overlay())
+        self._sync_cursor_overlay()
+
+        self._spectrum_plot.cursors_changed.connect(self._sync_vcursor_overlay)
+        self._sync_vcursor_overlay()
 
         content_layout.addWidget(right_panel, stretch=1)
         layout.addLayout(content_layout, stretch=1)
@@ -462,9 +766,55 @@ class OperatorTab(QWidget):
             "tdc_channel": self._get_tdc_channel(),
             "tdc_edge": self._get_tdc_edge(),
             "callback_batch_size": int(self._callback_batch_input.value()),
+            "n_bins": int(self._n_bins_input.value()),
             "duration": self._duration_input.value(),
             "output_dir": self._output_input.text(),
         }
+
+    def _build_preferences(self) -> dict:
+        """Snapshot the operator-sidebar widget state for persistence.
+
+        Stores the **displayed** combo text (not the converted forms used
+        by ``_get_params``) so restoration via ``QComboBox.setCurrentText``
+        round-trips exactly. See ``preferences.py`` for the full schema.
+        """
+        return {
+            "tdc_frequency": float(self._tdc_freq_input.value()),
+            "tdc_channel_text": self._tdc_ch_combo.currentText(),
+            "tdc_edge_text": self._tdc_edge_combo.currentText(),
+            "callback_batch_size": int(self._callback_batch_input.value()),
+            "n_bins": int(self._n_bins_input.value()),
+            "duration": int(self._duration_input.value()),
+            "output_dir": self._output_input.text(),
+        }
+
+    def load_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
+        """Restore acquisition-sidebar widgets from on-disk preferences.
+
+        Always succeeds: a missing or malformed file falls back to the
+        widget defaults (already set by ``_setup_ui``). Out-of-range
+        values are clamped before being applied. The output path tooltip
+        is refreshed to reflect the loaded path.
+        """
+        prefs = preferences.load_operator_preferences(path)
+        self._tdc_freq_input.setValue(float(prefs["tdc_frequency"]))
+        self._tdc_ch_combo.setCurrentText(prefs["tdc_channel_text"])
+        self._tdc_edge_combo.setCurrentText(prefs["tdc_edge_text"])
+        self._callback_batch_input.setValue(int(prefs["callback_batch_size"]))
+        self._n_bins_input.setValue(int(prefs["n_bins"]))
+        self._duration_input.setValue(int(prefs["duration"]))
+        self._output_input.setText(str(prefs["output_dir"]))
+        self._sync_output_path_tooltip()
+
+    def save_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
+        """Persist current sidebar widget state to disk (atomic write).
+
+        Idempotent and side-effect-free aside from the JSON write. The
+        caller is responsible for swallowing exceptions if the goal is
+        to never block quit; this method itself raises on I/O failure
+        so test code can assert behavior.
+        """
+        preferences.save_operator_preferences(self._build_preferences(), path)
 
     def _on_mode_clicked(self, mode: str):
         params = self._get_params()
@@ -486,6 +836,133 @@ class OperatorTab(QWidget):
     def _on_stop_clicked(self):
         self.stop_requested.emit()
 
+    @Slot(int, float, float)
+    def _on_cursor_changed(self, pair_idx: int, frac_a: float, frac_b: float) -> None:
+        """Recompute spectra whenever a heatmap ROI cursor is moved."""
+        self._update_spectra()
+
+    @Slot(int, int, int, int)
+    def _on_heatmap_view_changed(self, x0: int, x1: int, y0: int, y1: int) -> None:
+        """Refresh spectrum + readout when either heatmap zoom/view changes.
+
+        Cursor fractions are remapped through the current view, so the spectrum
+        data and the energy readout must be recomputed on every zoom.
+        """
+        self._update_spectra()
+        self._update_cursor_readout()
+
+    @Slot(float, float)
+    def _on_spectrum_cursors_changed(self, frac_a: float, frac_b: float) -> None:
+        """Update pixel/eV readout whenever a spectrum vertical cursor is moved."""
+        self._update_cursor_readout()
+
+    def _on_vcursor_heatmap_toggled(self, checked: bool) -> None:
+        self._current_heatmap.set_vcursors_on_heatmap(checked)
+        self._average_heatmap.set_vcursors_on_heatmap(checked)
+
+    def _sync_vcursor_overlay(self, frac_a=None, frac_b=None) -> None:
+        if frac_a is None:
+            frac_a, frac_b = self._spectrum_plot.get_cursor_fracs()
+        self._current_heatmap.set_vcursor_overlay(frac_a, frac_b)
+        self._average_heatmap.set_vcursor_overlay(frac_a, frac_b)
+
+    def _sync_cursor_overlay(self) -> None:
+        """Push the average heatmap cursor positions into the current-flush heatmap as a read-only overlay."""
+        fracs = self._average_heatmap.get_cursor_fracs()
+        active = [btn.isChecked() for btn in self._roi_toggle_btns]
+        self._current_heatmap.update_cursor_overlay(fracs, active)
+
+    def _update_cursor_readout(self) -> None:
+        """Refresh the pixel and eV position labels for the two vertical cursors.
+
+        Spectrum cursor fractions span the heatmap's *visible* x-range, so we
+        must map them through the current view to get the true pixel index.
+        When unzoomed (x0=0, x1=n) this reduces to ``frac * (n - 1)``.
+        """
+        n = self._n_energy
+        if n is None or n < 2:
+            for lbl in self._cursor_px_labels + self._cursor_ev_labels:
+                lbl.setText("--")
+            return
+
+        x0, x1, _, _ = self._average_heatmap.get_view()
+        x0 = max(0, min(x0, n - 1))
+        x1 = max(x0 + 1, min(x1, n))
+        x_span_eff = max(0, x1 - x0 - 1)
+
+        frac_a, frac_b = self._spectrum_plot.get_cursor_fracs()
+        x_a = x0 + frac_a * x_span_eff
+        x_b = x0 + frac_b * x_span_eff
+
+        pixel_per_ev = self._pixel_per_ev.value()
+        ev_at_mid = self._ev_at_mid.value()
+        eV_a = ev_at_mid + (x_a - n / 2) / pixel_per_ev
+        eV_b = ev_at_mid + (x_b - n / 2) / pixel_per_ev
+
+        dx = abs(x_b - x_a)
+        deV = abs(eV_b - eV_a)
+
+        self._cursor_px_labels[0].setText(f"{x_a:.1f}")
+        self._cursor_px_labels[1].setText(f"{x_b:.1f}")
+        self._cursor_px_labels[2].setText(f"{dx:.1f}")
+        self._cursor_ev_labels[0].setText(f"{eV_a:.2f}")
+        self._cursor_ev_labels[1].setText(f"{eV_b:.2f}")
+        self._cursor_ev_labels[2].setText(f"{deV:.2f}")
+
+    def _update_ruler_energy_scale(self) -> None:
+        n = self._n_energy
+        if n is None:
+            return
+        pixel_per_ev = self._pixel_per_ev.value()
+        if pixel_per_ev == 0:
+            return
+        ev_at_mid = self._ev_at_mid.value()
+        ev_per_pixel = 1.0 / pixel_per_ev
+        ev_at_zero = ev_at_mid - (n / 2) * ev_per_pixel
+        for hm in (self._current_heatmap, self._average_heatmap):
+            hm.set_x_scale(ev_per_pixel, ev_at_zero)
+
+    def _update_spectra(self) -> None:
+        """Bin the average heatmap between each cursor pair and update the spectrum plot.
+
+        Data shape is (n_energy, n_time).  The display shows ``flipud(data.T)``,
+        so display-row indices map to time bins as ``time_bin = (n_t - 1) - row``.
+        Cursor fractions are widget-relative and span the *visible* portion of
+        the heatmap (the current view), not the full data — so we must apply the
+        view to map them correctly when zoomed.  We also slice the spectrum to
+        the visible x (energy) range so the bottom plot's x-axis matches the
+        heatmap's x-axis after a zoom.
+        """
+        data = self._last_avg_2d
+        if data is None or data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
+            return
+        n_e, n_t = data.shape
+
+        # Visible region in data-index coords; clamp defensively.
+        x0, x1, y0, y1 = self._average_heatmap.get_view()
+        x0 = max(0, min(x0, n_e - 1))
+        x1 = max(x0 + 1, min(x1, n_e))
+        y0 = max(0, min(y0, n_t - 1))
+        y1 = max(y0 + 1, min(y1, n_t))
+
+        # Map widget fraction f in [0, 1] → continuous display row → time bin.
+        # When unzoomed (y0=0, y1=n_t) this reduces to (1 - f) * (n_t - 1),
+        # matching the previous formula.  ``y_span_eff`` uses (y1 - y0 - 1) so
+        # f=0 lands on row y0 and f=1 lands on row (y1 - 1), the last visible row.
+        y_span_eff = max(0, y1 - y0 - 1)
+
+        def frac_to_time_bin(f: float) -> int:
+            row = y0 + f * y_span_eff
+            return int(round((n_t - 1) - row))
+
+        for pair_idx, (frac_a, frac_b) in enumerate(self._average_heatmap.get_cursor_fracs()):
+            ta = max(0, min(n_t - 1, frac_to_time_bin(frac_a)))
+            tb = max(0, min(n_t - 1, frac_to_time_bin(frac_b)))
+            t_lo, t_hi = min(ta, tb), max(ta, tb)
+            n_bins = t_hi - t_lo + 1
+            spectrum = data[x0:x1, t_lo : t_hi + 1].sum(axis=1) / n_bins
+            self._spectrum_plot.set_spectrum(pair_idx, spectrum)
+
     def _on_colormap_changed(self, name: str):
         self._current_heatmap.set_colormap(name)
         self._average_heatmap.set_colormap(name)
@@ -494,9 +971,29 @@ class OperatorTab(QWidget):
         self._cumulative_sum = None
         self._total_cycles = 0
         self._flush_count = 0
+        self._last_avg_2d = None
+        self._n_energy = None
+        self._current_heatmap.clear()
         self._average_heatmap.clear()
+        self._spectrum_plot.clear()
+        for lbl in self._cursor_px_labels + self._cursor_ev_labels:
+            lbl.setText("--")
         self._update_flush_stats()
         logger.info("Running average reset")
+
+    def _set_zoom_mode(self, mode: str) -> None:
+        for btn, m in [
+            (self._zoom_rect_btn, "rect"),
+            (self._zoom_h_btn, "h"),
+            (self._zoom_v_btn, "v"),
+        ]:
+            btn.setChecked(m == mode)
+        self._current_heatmap.set_zoom_mode(mode)
+        self._average_heatmap.set_zoom_mode(mode)
+
+    def _reset_view(self) -> None:
+        self._current_heatmap.reset_view()
+        self._average_heatmap.reset_view()
 
     def _update_flush_stats(self):
         self._stats_labels["flushes_cycles"].setText(f"{self._flush_count} ({self._total_cycles:,})")
@@ -506,18 +1003,32 @@ class OperatorTab(QWidget):
         else:
             self._stats_labels["avg_counts"].setText("--")
 
+    def _refresh_mode_buttons_state(self) -> None:
+        """Enable Start/Preview only when Serval has finished HW init; simulator/replay never need Serval."""
+        acquiring = self._acquiring
+        serval_ok = self._serval_process_running and self._serval_hw_ready
+        if acquiring:
+            self._start_btn.setEnabled(False)
+            self._preview_btn.setEnabled(False)
+            self._simulator_btn.setEnabled(False)
+            self._replay_btn.setEnabled(False)
+            self._stop_btn.setEnabled(True)
+        else:
+            self._stop_btn.setEnabled(False)
+            self._start_btn.setEnabled(serval_ok)
+            self._preview_btn.setEnabled(serval_ok)
+            self._simulator_btn.setEnabled(True)
+            self._replay_btn.setEnabled(True)
+
     @Slot(bool)
     def set_acquiring(self, acquiring: bool):
         self._acquiring = acquiring
-        self._start_btn.setEnabled(not acquiring)
-        self._preview_btn.setEnabled(not acquiring)
-        self._simulator_btn.setEnabled(not acquiring)
-        self._replay_btn.setEnabled(not acquiring)
-        self._stop_btn.setEnabled(acquiring)
+        self._refresh_mode_buttons_state()
         self._tdc_freq_input.setEnabled(not acquiring)
         self._tdc_ch_combo.setEnabled(not acquiring)
         self._tdc_edge_combo.setEnabled(not acquiring)
         self._callback_batch_input.setEnabled(not acquiring)
+        self._n_bins_input.setEnabled(not acquiring)
         self._duration_input.setEnabled(not acquiring)
         self._output_input.setEnabled(not acquiring)
         self._browse_output_btn.setEnabled(not acquiring)
@@ -555,8 +1066,24 @@ class OperatorTab(QWidget):
                 avg_2d = np.sum(average, axis=1)
 
             avg_stats = f"Over {self._total_cycles} cycles | Avg: {np.sum(avg_2d):.2e}"
+            self._last_avg_2d = avg_2d
+            self._n_energy = avg_2d.shape[0]
             self._average_heatmap.set_data(avg_2d, avg_stats)
             self._update_flush_stats()
+            self._update_spectra()
+            self._update_cursor_readout()
+            t_delta_ns = metadata.get("t_delta_ns")
+            if t_delta_ns is None:
+                tdc_hz = metadata.get("tdc_frequency_hz")
+                n_t = avg_2d.shape[1]
+                n_bins_meta = metadata.get("n_bins") or n_t
+                if tdc_hz and tdc_hz > 0:
+                    t_delta_ns = 1e9 / (tdc_hz * n_bins_meta)
+            if t_delta_ns:
+                n_t = avg_2d.shape[1]
+                for hm in (self._current_heatmap, self._average_heatmap):
+                    hm.set_axis_info(t_delta_ns, n_t)
+            self._update_ruler_energy_scale()
 
     def _update_serval_indicator(self) -> None:
         """Red when JVM down; blinking green until chip temps log; then steady green + Idle/status."""
@@ -582,6 +1109,7 @@ class OperatorTab(QWidget):
         self._serval_process_running = running
         self._serval_hw_ready = False
         self._update_serval_indicator()
+        self._refresh_mode_buttons_state()
 
     def on_serval_chip_temps_line_seen(self) -> None:
         """Called when Serval stdout contains the chip temperature line (startup complete)."""
@@ -589,6 +1117,7 @@ class OperatorTab(QWidget):
             return
         self._serval_hw_ready = True
         self._update_serval_indicator()
+        self._refresh_mode_buttons_state()
 
     @Slot(object)
     def on_serval_status(self, status: ServalStatus):
@@ -666,11 +1195,16 @@ class OperatorTab(QWidget):
 
     def save_average_data(
         self, output_dir: str, filename_base: str
-    ) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
-        """Save the average heatmap as PNG, CSV, and metadata as JSON."""
+    ) -> tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path], Optional[Path], str]:
+        """Save heatmap as PNG, CSV, energy-axis CSV, time-axis CSV, metadata JSON (incl. scan_name).
+
+        Returns (png_path, csv_path, energy_path, time_path, json_path, slug) where slug is
+        ``{uuid_short}_{local_timestamp}`` and is shared by all six output files including the
+        renamed .tpx3 source file.
+        """
         if self._cumulative_sum is None or self._total_cycles == 0:
             logger.warning("No data to save")
-            return None, None, None
+            return None, None, None, None, None, ""
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -681,17 +1215,62 @@ class OperatorTab(QWidget):
         else:
             avg_2d = np.sum(average, axis=1)
 
-        # Save CSV
-        csv_path = output_path / f"{filename_base}_avg.csv"
+        # Use scan_name from ZMQ metadata so it matches what the streaming server
+        # broadcast; fall back to a fresh UUID4 when metadata isn't available.
+        meta_for_uuid = self._last_metadata or {}
+        scan_uuid = meta_for_uuid.get("scan_name") or str(uuid.uuid4())
+        scan_uuid_short = scan_uuid.replace("-", "")[:8]
+        save_ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        slug = f"{scan_uuid_short}_{save_ts}"
+
+        # Save average CSV
+        csv_path = output_path / f"{filename_base}_{slug}_avg.csv"
         try:
             np.savetxt(csv_path, avg_2d, delimiter=",", fmt="%.6e")
-            logger.info(f"Saved CSV: {csv_path}")
+            logger.info("Saved CSV: %s (scan: %s)", csv_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save CSV: {e}")
             csv_path = None
 
+        # Save energy-axis CSV (one eV value per x-pixel)
+        energy_path = output_path / f"{filename_base}_{slug}_energy.csv"
+        try:
+            n_x = avg_2d.shape[0]
+            pixel_per_ev = self._pixel_per_ev.value()
+            ev_at_mid = self._ev_at_mid.value()
+            energy_axis = ev_at_mid + (np.arange(n_x) - n_x / 2) / pixel_per_ev
+            np.savetxt(energy_path, energy_axis, delimiter=",", fmt="%.6f")
+            logger.info("Saved energy axis CSV: %s (scan: %s)", energy_path, scan_uuid)
+        except Exception as e:
+            logger.error(f"Failed to save energy axis CSV: {e}")
+            energy_path = None
+
+        # Save time-axis CSV (one ns value per time bin)
+        # t_delta_ns comes from the ZMQ metadata published by app.py; it is
+        # 1 / (tdc_frequency_hz * n_bins) * 1e9 and is the width of one time bin.
+        time_path = output_path / f"{filename_base}_{slug}_time.csv"
+        try:
+            n_t = avg_2d.shape[1]
+            meta = self._last_metadata or {}
+            t_delta_ns = meta.get("t_delta_ns")
+            if t_delta_ns is None:
+                # Fallback: reconstruct from tdc_frequency and n_bins if present
+                tdc_hz = meta.get("tdc_frequency_hz")
+                n_bins = meta.get("n_bins") or n_t
+                if tdc_hz and tdc_hz > 0:
+                    t_delta_ns = 1e9 / (tdc_hz * n_bins)
+                else:
+                    t_delta_ns = 1.0  # unknown — bin index only
+                    logger.warning("t_delta_ns not in metadata; time axis will be bin-index units (1 ns/bin assumed)")
+            time_axis = np.arange(n_t) * t_delta_ns
+            np.savetxt(time_path, time_axis, delimiter=",", fmt="%.6f")
+            logger.info("Saved time axis CSV: %s (scan: %s)", time_path, scan_uuid)
+        except Exception as e:
+            logger.error(f"Failed to save time axis CSV: {e}")
+            time_path = None
+
         # Save PNG
-        png_path = output_path / f"{filename_base}_avg.png"
+        png_path = output_path / f"{filename_base}_{slug}_avg.png"
         try:
             display_data = np.flipud(avg_2d.T.astype(np.float32))
             vmin, vmax = display_data.min(), display_data.max()
@@ -707,15 +1286,16 @@ class OperatorTab(QWidget):
             h, w = rgb.shape[:2]
             qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
             qimg.save(str(png_path))
-            logger.info(f"Saved PNG: {png_path}")
+            logger.info("Saved PNG: %s (scan: %s)", png_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save PNG: {e}")
             png_path = None
 
         # Save JSON metadata
-        json_path = output_path / f"{filename_base}_meta.json"
+        json_path = output_path / f"{filename_base}_{slug}_meta.json"
         try:
             meta = {
+                "scan_name": scan_uuid,
                 "total_flushes": self._flush_count,
                 "total_cycles": self._total_cycles,
                 "total_counts": float(np.sum(self._cumulative_sum)),
@@ -728,9 +1308,9 @@ class OperatorTab(QWidget):
 
             with open(json_path, "w") as f:
                 json.dump(meta, f, indent=2)
-            logger.info(f"Saved JSON: {json_path}")
+            logger.info("Saved JSON: %s (scan: %s)", json_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save JSON: {e}")
             json_path = None
 
-        return png_path, csv_path, json_path
+        return png_path, csv_path, energy_path, time_path, json_path, slug

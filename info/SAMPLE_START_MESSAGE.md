@@ -15,7 +15,7 @@ The following is the logical content of the start message as a JSON object. Over
 ```json
 {
   "msg_type": "start",
-  "scan_name": "acquisition_20250128T143022Z_a1b2c3d4",
+  "scan_name": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f23456789",
   "tdc_frequency_hz": 1000.0,
   "t_delta_ns": 10.0,
   "t_cycle_ns": 1000000.0,
@@ -28,7 +28,8 @@ The following is the logical content of the start message as a JSON object. Over
   "tdc_edge": "rising",
   "collapse_y": false,
   "zmq_port": 5657,
-  "tcp_port": 9090
+  "tcp_port": 9090,
+  "mode": "timing"
 }
 ```
 
@@ -37,7 +38,7 @@ The following is the logical content of the start message as a JSON object. Over
 | Field | Type | Description |
 |-------|------|-------------|
 | `msg_type` | string | Always `"start"` for this message type. |
-| `scan_name` | string | Unique identifier for this acquisition run. Format: `acquisition_YYYYMMDDTHHMMSSZ_<uuid8>` (UTC, ISO 8601). Example: `acquisition_20250128T143022Z_a1b2c3d4`. |
+| `scan_name` | string | Unique identifier for this acquisition run. A full UUID4 (36 characters), e.g. `a1b2c3d4-e5f6-4a7b-8c9d-0e1f23456789`. |
 | `tdc_frequency_hz` | float | TDC trigger frequency in Hz. |
 | `t_delta_ns` | float | Time bin width in nanoseconds. |
 | `t_cycle_ns` | float | Full time cycle in nanoseconds. |
@@ -51,10 +52,11 @@ The following is the logical content of the start message as a JSON object. Over
 | `collapse_y` | bool | Whether the Y dimension is collapsed in the 3D array. |
 | `zmq_port` | int | ZMQ publishing port for this server. |
 | `tcp_port` | int | TCP socket port for the live-cli connection. |
+| `mode` | string | Acquisition mode: `"timing"` (default, TDC-driven time-resolved binning) or `"alignment"` (wall-clock-gated 2D X/Y histogram used by the Alignment tab). Subscribers route on this field; older subscribers can ignore it. |
 
-## Time in `scan_name`
+## `scan_name` format
 
-The timestamp in `scan_name` is **UTC** in **ISO 8601** form: `YYYYMMDDTHHMMSSZ` (e.g. `20250128T143022Z`). It is generated when a new client connects and the run starts, using `datetime.now(timezone.utc)`, so it is unambiguous and sortable across machines and timezones.
+`scan_name` is a **full UUID4** (36 characters), generated when a new client connects and the run starts. The same UUID is used by the UI's file-naming convention: saved output files (CSV, PNG, JSON metadata) embed the first 8 characters of this UUID plus a local timestamp, so downstream files can be matched back to the run's start message.
 
 ## Usage in code
 
@@ -66,4 +68,4 @@ The timestamp in `scan_name` is **UTC** in **ISO 8601** form: `YYYYMMDDTHHMMSSZ`
 - **Event message** (`msg_type: "event"`): Multi-part ZMQ message (metadata + raw array bytes); one per flush.
 - **Stop message** (`msg_type: "stop"`): Single-part, msgpack; sent when acquisition ends (disconnect or shutdown).
 
-See `IMPLEMENTATION_OVERVIEW.md` and `schemas.py` for full details.
+See `src/splash_timepix/schemas.py` for the authoritative field definitions (`TimePixStart`, `TimePixEvent`, `TimePixStop`).

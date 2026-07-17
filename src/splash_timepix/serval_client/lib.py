@@ -32,9 +32,17 @@ class ServalClient:
         try:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
         except requests.RequestException as e:
+            logging.error("HTTP %s %s failed (connection error): %s", method.upper(), url, e)
             raise ServalError(f"Connection error: {e}")
 
         if response.status_code != expected_status:
+            logging.error(
+                "HTTP %s %s failed (status %d): %s",
+                method.upper(),
+                url,
+                response.status_code,
+                response.text,
+            )
             raise ServalError(f"Unexpected status {response.status_code} for {url}: {response.text}")
 
         return response
@@ -55,6 +63,7 @@ class ServalClient:
         """
         if not file_path.exists():
             raise ServalError(f"Configuration file not found: {file_path}")
+        logging.debug("Opening detector config file: %s (format: %s)", file_path, fmt)
         params = {"format": fmt, "file": str(file_path)}
         resp = self._request("get", "/config/load", params=params)
 

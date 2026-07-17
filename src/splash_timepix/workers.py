@@ -359,7 +359,8 @@ def zmq_worker(
         # Note: Start messages sent before this sleep might be missed by late-connecting subscribers
         time.sleep(1.0)  # Increased to 1 second to help with slow joiner problem
 
-        flush_count = 0
+        # flush_number comes from app.py flush_metadata — that is the single source of truth.
+        last_flush_num: int = 0
 
         while not stop_event.is_set():
             # First, check for control messages (start/stop) - higher priority
@@ -413,18 +414,20 @@ def zmq_worker(
                     socket.send(metadata_bytes, zmq.SNDMORE | zmq.DONTWAIT)
                     socket.send(array_bytes, zmq.DONTWAIT)
 
-                    flush_num = flush_metadata.get("flush_number", "?")
+                    last_flush_num = flush_metadata.get("flush_number", last_flush_num)
                     logger.info(
-                        f"Published flush #{flush_num}: shape={array_data.shape}, "
+                        f"Published flush #{last_flush_num}: shape={array_data.shape}, "
                         f"total_counts={np.sum(array_data)}, "
                         f"cycles={flush_metadata.get('cycles_in_flush', '?')}, "
                         f"size={len(array_bytes)/1024/1024:.2f} MB"
                     )
 
                 except zmq.Again:
-                    logger.warning("ZMQ send would block (no subscribers or slow subscribers), dropping flush")
+                    logger.warning(
+                        "ZMQ send would block, dropping flush (scan=%s)",
+                        flush_metadata.get("scan_name", "?"),
+                    )
 
-                flush_count += 1
                 xyt_queue.task_done()
 
             except queue.Empty:
@@ -453,7 +456,7 @@ def zmq_worker(
                 except queue.Empty:
                     break
 
-        logger.info(f"ZMQ worker published {flush_count} flushes total")
+        logger.info(f"ZMQ worker finished; last flush_number from app.py = {last_flush_num}")
 
     except Exception as e:
         logger.error(f"Fatal error in ZMQ worker: {e}", exc_info=True)

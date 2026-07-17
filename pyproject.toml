@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splash_timepix"
-version = "0.6.0"
+version = "0.6.3"
 description = "Code to stream from timepix"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -26,10 +26,10 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
-dependencies = ["numpy", "typer", "psutil", "opencv-python", "pyzmq", "msgpack", "requests", "pydantic"]
+dependencies = ["numpy", "h5py", "typer", "psutil", "opencv-python", "pyzmq", "msgpack", "requests", "pydantic"]
 
 [project.optional-dependencies]
-ui = ["PySide6>=6.5.0",]
+ui = ["PySide6>=6.5.0", "pyqtgraph>=0.13"]
 # Pin linters to match .pre-commit-config.yaml (avoids CI vs local version drift).
 dev = [
   "check-manifest",
@@ -53,6 +53,9 @@ tpx-sim = "splash_timepix.simulator_cli:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"splash_timepix.ui" = ["assets/*.png"]
 
 # Tool configurations
 [tool.black]
@@ -79,7 +82,8 @@ addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
-    "--color=yes"
+    "--color=yes",
+    "-m", "not slow"
 ]
 markers = [
     "slow: marks tests as slow",

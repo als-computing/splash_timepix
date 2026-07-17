@@ -223,6 +223,12 @@ def wait_for_ready(port: int = 5658, timeout: float = 30.0) -> bool:
 
             except zmq.Again:
                 # Timeout on recv, check overall timeout
+                elapsed = time.time() - start_time
+                logger.debug(
+                    "wait_for_ready: no heartbeat received after %.1fs (timeout=%.1fs); retrying",
+                    elapsed,
+                    timeout,
+                )
                 continue
 
         logger.warning(f"Timeout waiting for server ready after {timeout}s")

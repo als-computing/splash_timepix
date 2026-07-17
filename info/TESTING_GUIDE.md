@@ -24,7 +24,7 @@ Use **three terminals**. Start in this order: server first, then listener, then 
 
 ```bash
 # Go to splash_timepix project
-cd /home/gabrielgazolla/Downloads/task/splash_timepix
+cd /path/to/splash_timepix
 
 # Activate your splash_timepix environment (or base if installed there)
 # conda activate splash_timepix   # if you use one
@@ -41,7 +41,7 @@ Leave this running. You should see the server listening (e.g. on port 9090 for T
 conda activate arroyoxps
 
 # Go to ArroyoXPS project
-cd /home/gabrielgazolla/Downloads/task/ArroyoXPS
+cd /path/to/ArroyoXPS
 
 # Run the TimePix ZMQ listener (DummyOperator prints start/event/stop)
 python -m tr_ap_xps.timepix
@@ -53,7 +53,7 @@ Leave this running. It will connect to `tcp://localhost:5657` (splash_timepix’
 
 ```bash
 # Go to splash_timepix project
-cd /home/gabrielgazolla/Downloads/task/splash_timepix
+cd /path/to/splash_timepix
 
 # Same environment as Terminal 1
 python -m splash_timepix.simulator_cli
@@ -73,7 +73,7 @@ This sends data for 10 seconds. Type `stop` or wait for the run to finish.
 
 - **splash_timepix server (Terminal 1):** Logs when start/stop are queued and when flushes are published.
 - **ArroyoXPS listener (Terminal 2):** Connects to `tcp://localhost:5657`, receives and logs:
-  - **Start:** e.g. `Dummy operator received START: scan_name=acquisition_YYYYMMDDTHHMMSSZ_xxxxxxxx` (UTC, ISO 8601)
+  - **Start:** e.g. `Dummy operator received START: scan_name=<uuid4>` (scan_name is a full UUID4, e.g. `a1b2c3d4-e5f6-4a7b-8c9d-0e1f23456789`)
   - **Events:** e.g. `Dummy operator received EVENT with image shape: (256, 256, 350)` (shape may vary)
   - **Stop:** e.g. `Dummy operator received STOP`
 - **Simulator (Terminal 3):** Sends packets to the server; `start 10` runs for 10 seconds.
@@ -93,7 +93,7 @@ This usually means the listener is running in the wrong environment or from the 
   The `arroyopy` package (and correct `ZMQListener` signature) must be available in this env.
 
 - **Run from the ArroyoXPS project directory:**
-  `cd /home/gabrielgazolla/Downloads/task/ArroyoXPS`
+  `cd /path/to/ArroyoXPS`
   Then run `python -m tr_ap_xps.timepix` so that `tr_ap_xps` and its config (e.g. ZMQ port) resolve correctly.
 
 - **Check ArroyoXPS code:** In `tr_ap_xps.timepix`, `XPSTimepixZMQListener` must call `super().__init__(operator, zmq_socket)` (operator first, socket second) to match `arroyopy.zmq.ZMQListener`. If you still see the error after fixing env/cd, verify that `__init__` passes arguments in that order.
@@ -172,9 +172,13 @@ This starts server and simulator in subprocesses, subscribes to ZMQ, and checks 
 
 ```bash
 cd /path/to/splash_timepix
-pytest tests/test_schemas.py -v
-pytest tests/test_listener.py -v
+# Schema validation + start/event/stop integration coverage
+pytest tests/test_start_stop_messages.py -v
 ```
+
+The schema-only assertions live inside `class TestSchemas` in that file; the
+remaining tests in the module spin up the streaming server via the
+`streaming_rig` fixture and assert on real ZMQ traffic.
 
 ### Method 4: Real hardware (TimePix3)
 

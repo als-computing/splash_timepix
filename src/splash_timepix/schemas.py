@@ -56,6 +56,11 @@ class TimePixStart(BaseModel):
     collapse_y: bool = Field(..., description="Whether Y dimension is collapsed")
     zmq_port: int = Field(..., description="ZMQ publishing port")
     tcp_port: int = Field(..., description="TCP socket port for live-cli connection")
+    # Acquisition mode. "timing" is the default time-resolved pipeline (TDC-driven binning);
+    # "alignment" is the wall-clock-gated 2D X/Y histogram path used by the Alignment tab.
+    # Subscribers route on this field; old subscribers ignoring it still get correct
+    # shape/dtype info from `shape` and `dtype` and behave as before.
+    mode: Literal["timing", "alignment"] = Field(default="timing", description="Acquisition mode")
 
 
 class TimePixStop(BaseModel):

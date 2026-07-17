@@ -13,7 +13,6 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 
 import numpy as np
 import psutil
@@ -72,6 +71,8 @@ def main(
     exit_on_disconnect: bool = False,
     collapse_y: bool = False,
     heartbeat_port: int = 5658,
+    alignment: bool = False,
+    alignment_rate_hz: float = 30.0,
 ):
     """
     Time-resolved TimePix3 data streaming server.
@@ -94,15 +95,37 @@ def main(
         exit_on_disconnect: Exit when client disconnects (for orchestrated runs)
         collapse_y: Send x,y,t (False) or x,t data (True)
         heartbeat_port: Port for ZMQ heartbeat messages (default: 5658)
+        alignment: Run in alignment mode — TDCs ignored, wall-clock 2D (x, y, 1)
+            histograms emitted at ``alignment_rate_hz``. Reuses the rest of the
+            pipeline (parse callback, xyt_lock, xyt_queue, zmq_worker) unchanged.
+        alignment_rate_hz: Wall-clock flush rate for alignment mode (1–30 Hz, default 30).
     """
     _clear_screen_safely()
     print("Starting TimPix3 Streaming Application")
     print("=" * 50)
+    if alignment:
+        print("Mode: Alignment (TDC-free, wall-clock 2D X/Y histograms)")
     if exit_on_disconnect:
         print("Mode: Exit on client disconnect (orchestrated)")
     else:
         print("Mode: Persistent (Ctrl+C to stop)")
     print()
+
+    # Alignment-mode parameter coercion. We reuse the entire xyt_* pipeline
+    # (array, lock, queue, ZMQ worker) by forcing n_bins=1 and collapse_y=False
+    # so the existing allocation produces shape (X, Y, 1). Flush cadence is
+    # driven by alignment_rate_hz (1–30 Hz). TDC fields stay at their defaults
+    # — alignment callbacks never read them, but downstream pydantic schemas
+    # and the t_cycle math require finite values.
+    if alignment:
+        if alignment_rate_hz < 1.0 or alignment_rate_hz > 30.0:
+            logger.warning(f"alignment_rate_hz {alignment_rate_hz} outside 1-30; clamping")
+            alignment_rate_hz = max(1.0, min(30.0, alignment_rate_hz))
+        n_bins = 1
+        collapse_y = False
+        flush_interval = 1.0 / alignment_rate_hz
+        if tdc_frequency <= 0:
+            tdc_frequency = 1.0  # placeholder; never read in alignment mode
 
     # Calculate binning and display parameters from user inputs
     t_cycle = (1.0 / tdc_frequency) * 1e12  # seconds → picoseconds
@@ -172,13 +195,13 @@ def main(
 
     heartbeat.set_queue_stats_provider(_queue_stats_for_heartbeat)
 
-    # Generate unique scan name
-    # Generate initial scan_name (will be regenerated for each new client connection)
-    # UTC, ISO 8601 format (YYYYMMDDTHHMMSSZ) for unambiguous, sortable identifiers
+    # UUID for the current acquisition.
+    # Full UUID4 (36 chars) so it matches scan_name in the UI's *_meta.json at save time.
+    # Single source of truth: generated exclusively in the client-connect block below.
     def generate_scan_name():
-        return f"acquisition_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+        return str(uuid.uuid4())
 
-    scan_name = generate_scan_name()
+    scan_name: str | None = None  # set by client-connect block; None until first connect
 
     # Define x, y, t accumulator array
     config = SimulatorConfig()
@@ -190,6 +213,13 @@ def main(
         xyt_array = np.zeros((detector_size_x, n_bins), dtype=np.uint32)
     else:
         xyt_array = np.zeros((detector_size_x, detector_size_y, n_bins), dtype=np.uint32)
+
+    logger.info(
+        "XYT array allocated: shape=%s, dtype=%s, size=%.2f MB",
+        xyt_array.shape,
+        xyt_array.dtype,
+        xyt_array.nbytes / 1e6,
+    )
 
     xyt_lock = threading.Lock()
 
@@ -207,6 +237,7 @@ def main(
         "tdc_channel": tdc_ch,
         "tdc_edge": tdc_edge,
         "collapse_y": collapse_y,
+        "mode": "alignment" if alignment else "timing",
     }
 
     # Choose worker based on plot flag
@@ -225,13 +256,14 @@ def main(
     # Calculate flush cycles from interval and frequency
     flush_every_n_cycles = max(1, int(flush_interval * tdc_frequency))
 
-    # Errors and warnings
-    if tdc_frequency < 0.1:
-        logger.error(f"Low TDC frequency ({tdc_frequency} Hz) → detector may miss TDC events")
-        return
-    if flush_interval < (1.0 / tdc_frequency):
-        logger.warning(f"Flush interval ({flush_interval}s) < TDC period ({1.0/tdc_frequency:.2f}s)")
-        logger.warning("   Will flush every TDC cycle (flush_every_n_cycles = 1)")
+    # Errors and warnings (TDC-related — skipped in alignment mode where TDCs are unused).
+    if not alignment:
+        if tdc_frequency < 0.1:
+            logger.error(f"Low TDC frequency ({tdc_frequency} Hz) → detector may miss TDC events")
+            return
+        if flush_interval < (1.0 / tdc_frequency):
+            logger.warning(f"Flush interval ({flush_interval}s) < TDC period ({1.0/tdc_frequency:.2f}s)")
+            logger.warning("   Will flush every TDC cycle (flush_every_n_cycles = 1)")
 
     # Memory check
     array_size_gb = xyt_array.nbytes / (1024**3)
@@ -255,11 +287,11 @@ def main(
     process = psutil.Process(os.getpid())
     print(f"Monitoring Python server process (PID: {os.getpid()})")
 
-    # Set up a callback to handle new data
+    # Per-acquisition state variables.
+    # These declarations satisfy Python's nonlocal scoping requirements for the nested
+    # functions (data_callback, handle_tdc, bin_pixels, do_final_flush).
+    # Authoritative reset on every client connect: see the "client_connected" branch below.
     event_count = 0
-
-    # Time-resolved binning callback
-    # State variables
     t_zero = None
     cycle_count = 0
     flush_count = 0
@@ -267,8 +299,23 @@ def main(
     pixels_outside_window = 0
     last_tdc_warning_time = None
     first_pixel_time = None
-    start_message_sent = False  # Track if start message has been sent
-    acquisition_start_time = None  # Track when acquisition actually started
+    start_message_sent = False
+    acquisition_start_time = None
+    # Wall-clock flush gate state.
+    #   last_flush_time: time.monotonic() of the most recent emit, or None
+    #     before the first TDC of the acquisition has armed the clock.  Using
+    #     monotonic (not wall) makes the gate NTP/DST-proof; the wire-level
+    #     flush_metadata "timestamp" published by zmq_worker still uses
+    #     time.time() so subscribers see no change in format.
+    #   cycles_since_last_flush: number of *closed* TDC cycles currently
+    #     accumulated in local_accumulator.  Exactly what the old gate's
+    #     "flush_every_n_cycles" constant used to carry, except now driven
+    #     by wall-clock boundaries rather than a modulus on cycle_count.
+    last_flush_time = None
+    cycles_since_last_flush = 0
+    # Alignment-mode running counter for the wire-level pixel total in start/stop
+    # messages. Reset on every client connect alongside the TDC-mode counters.
+    pixel_count_total = 0
 
     # Convert edge string to enum value
     target_edge = 0 if tdc_edge.lower() == "rising" else 1
@@ -296,8 +343,10 @@ def main(
 
         current_time = time.time()
 
-        # Send start message when first data arrives
-        if not start_message_sent and message_queue is not None:
+        # Send start message when first data arrives.
+        # Guard on scan_name: the main loop generates it on client-connect; if it hasn't
+        # fired yet (main loop mid-sleep) we skip here and let the main-loop start take over.
+        if not start_message_sent and message_queue is not None and scan_name is not None:
             acquisition_start_time = current_time
             start_msg = TimePixStart(
                 scan_name=scan_name,
@@ -423,40 +472,30 @@ def main(
 
         # Helper function to handle TDC trigger (flush check + update t_zero)
         def handle_tdc(tdc_ts):
-            """Process a TDC trigger: check for flush, update t_zero."""
-            nonlocal t_zero, cycle_count, flush_count
-            nonlocal pixels_before_trigger, pixels_outside_window
-            nonlocal last_tdc_warning_time
-            nonlocal xyt_array
+            """Process a TDC trigger: wall-clock-gated flush, then update t_zero.
 
-            # Check if we need to flush
-            if cycle_count > 0 and cycle_count % flush_every_n_cycles == 0:
-                with xyt_lock:
-                    xyt_array += local_accumulator
-                    array_copy = xyt_array.copy()
-                    xyt_array.fill(0)
+            A TDC closes the *previous* cycle.  We therefore increment the
+            closed-cycle counter only when ``t_zero is not None``, i.e. only
+            when there was a previous cycle to close.  Flush emission is
+            delegated to ``emit_flush_if_due()`` which does the gate check,
+            the accumulator copy, and the state reset all under
+            ``xyt_lock`` to avoid a TOCTOU race with the main-loop watchdog.
+            """
+            nonlocal t_zero, cycle_count, last_tdc_warning_time
+            nonlocal last_flush_time, cycles_since_last_flush
 
-                local_accumulator.fill(0)
-                flush_count += 1
+            if t_zero is not None:
+                cycles_since_last_flush += 1
+                cycle_count += 1
 
-                flush_metadata = {
-                    "cycles_in_flush": flush_every_n_cycles,
-                    "total_cycles": cycle_count,
-                    "flush_number": flush_count,
-                    "pixels_discarded_before_trigger": int(pixels_before_trigger),
-                    "pixels_discarded_outside_window": int(pixels_outside_window),
-                }
-
-                try:
-                    xyt_queue.put_nowait((array_copy, flush_metadata))
-                    logger.info(f"Flushed: #{flush_count}, cycles={flush_every_n_cycles}")
-                    pixels_before_trigger = 0
-                    pixels_outside_window = 0
-                except queue.Full:
-                    logger.warning("Processing queue full, dropping array")
+            # Arm the wall-clock gate on the first TDC of the acquisition
+            # (or after reconnect); afterwards let the gate decide.
+            if last_flush_time is None:
+                last_flush_time = time.monotonic()
+            else:
+                emit_flush_if_due()
 
             t_zero = int(tdc_ts)
-            cycle_count += 1
             last_tdc_warning_time = current_time
 
         # =====================================================================
@@ -486,8 +525,305 @@ def main(
                 mask = pixel_indices > last_boundary
                 bin_pixels(mask)
 
-    # Set the callback
-    server.set_data_callback(data_callback)
+    def emit_flush_if_due() -> bool:
+        """Publish one flush event if the wall-clock gate is open.
+
+        Called from two producers: ``handle_tdc`` on the TCP callback
+        thread, and the main loop's silence watchdog.  Both entry points
+        funnel through here so the gate check, the accumulator copy,
+        and the state reset all happen atomically under ``xyt_lock``.
+        That atomicity is what makes the check-and-reset race-free: a
+        second caller sees ``cycles_since_last_flush == 0`` and bails
+        without double-emitting.
+
+        Returns True iff an event was actually put on ``xyt_queue``.
+        """
+        nonlocal last_flush_time, cycles_since_last_flush
+        nonlocal flush_count, pixels_before_trigger, pixels_outside_window
+        nonlocal xyt_array
+
+        with xyt_lock:
+            # Gate: nothing to do if no TDC has armed the clock yet,
+            # if the accumulator is empty, or if the flush interval
+            # has not elapsed since the last emit.
+            if last_flush_time is None:
+                return False
+            if cycles_since_last_flush == 0:
+                return False
+            if (time.monotonic() - last_flush_time) < flush_interval:
+                return False
+
+            xyt_array += local_accumulator
+            array_copy = xyt_array.copy()
+            xyt_array.fill(0)
+            local_accumulator.fill(0)
+
+            flush_count += 1
+            cycles_in_flush = cycles_since_last_flush
+            total_cycles_snapshot = cycle_count
+            flush_number = flush_count
+            pbt = int(pixels_before_trigger)
+            pow_ = int(pixels_outside_window)
+
+            last_flush_time = time.monotonic()
+            cycles_since_last_flush = 0
+            pixels_before_trigger = 0
+            pixels_outside_window = 0
+
+        # Build metadata and put on the queue OUTSIDE the lock.  Queue
+        # has its own internal lock and we want the critical section
+        # above to stay as short as possible.
+        flush_metadata = {
+            "scan_name": scan_name,
+            "cycles_in_flush": cycles_in_flush,
+            "total_cycles": total_cycles_snapshot,
+            "flush_number": flush_number,
+            "pixels_discarded_before_trigger": pbt,
+            "pixels_discarded_outside_window": pow_,
+        }
+        try:
+            xyt_queue.put_nowait((array_copy, flush_metadata))
+            logger.info(f"Flushed: #{flush_number}, cycles={cycles_in_flush}")
+            return True
+        except queue.Full:
+            logger.warning("Processing queue full, dropping array (scan=%s)", scan_name)
+            return False
+
+    def _wait_for_xyt_drain(timeout: float = 30.0) -> None:
+        """Block until xyt_queue is empty or timeout expires.
+
+        Must be called before putting a stop message into message_queue so that
+        all buffered event messages are published by the ZMQ worker before the
+        stop control message.  The ZMQ worker checks message_queue with higher
+        priority, so without this wait the stop would jump ahead of queued flushes.
+        """
+        deadline = time.time() + timeout
+        while not xyt_queue.empty() and time.time() < deadline:
+            time.sleep(0.05)
+        if not xyt_queue.empty():
+            logger.warning(
+                "xyt_queue not drained after %.1fs (scan=%s); stop message may arrive before remaining flushes",
+                timeout,
+                scan_name,
+            )
+
+    def do_final_flush() -> None:
+        """Flush any data remaining in the accumulator before sending a stop message.
+
+        The normal flush is triggered by an incoming TDC pulse closing the previous
+        cycle.  When a stream ends the last N partial cycles never see a closing TDC,
+        so this helper is called at each stop site to publish that residual data as
+        one last event message before the stop control message goes out.
+        """
+        nonlocal flush_count, xyt_array
+
+        with xyt_lock:
+            xyt_array += local_accumulator
+            has_data = bool(np.any(xyt_array))
+            if has_data:
+                array_copy = xyt_array.copy()
+            xyt_array.fill(0)
+
+        local_accumulator.fill(0)
+
+        if not has_data:
+            return
+
+        flush_count += 1
+        # Accurate residual cycle count: cycles_since_last_flush is
+        # decremented to 0 after each emit_flush_if_due, so what's left
+        # here is exactly the number of closed cycles still sitting in
+        # local_accumulator.  Replaces the pre-fix
+        # `cycle_count % flush_every_n_cycles` heuristic, which was
+        # off-by-one (a TDC arms the next cycle without it being
+        # closed yet).
+        partial_cycles = cycles_since_last_flush
+        flush_metadata = {
+            "scan_name": scan_name,
+            "cycles_in_flush": partial_cycles,
+            "total_cycles": cycle_count,
+            "flush_number": flush_count,
+            "pixels_discarded_before_trigger": int(pixels_before_trigger),
+            "pixels_discarded_outside_window": int(pixels_outside_window),
+        }
+        try:
+            xyt_queue.put_nowait((array_copy, flush_metadata))
+            logger.info(
+                "Final flush #%d: %d partial cycles flushed before stop (scan=%s)",
+                flush_count,
+                partial_cycles,
+                scan_name,
+            )
+        except queue.Full:
+            logger.warning("Processing queue full, dropping final flush (scan=%s)", scan_name)
+
+    # =========================================================================
+    # Alignment-mode parallels to data_callback / emit_flush_if_due / do_final_flush.
+    #
+    # These use the same xyt_lock, xyt_queue, xyt_array, and local_accumulator as
+    # the timing-mode functions above.  Only the *gate* differs: TDCs are ignored
+    # entirely and the flush fires on a pure wall-clock interval.  Reusing the
+    # rest of the pipeline means alignment benefits from the same backpressure
+    # (q_ingest, xyt_queue, ZMQ SNDHWM) as timing mode — see the plan doc for the
+    # buffering analysis.  Only one of the two callback families is wired into
+    # ``server.set_data_callback`` based on the ``alignment`` flag below.
+    # =========================================================================
+
+    def data_callback_alignment(result) -> None:
+        """Alignment-mode callback: 2D X/Y histogram, no TDC handling.
+
+        Writes pixel hits into ``local_accumulator[:, :, 0]`` (singleton time
+        bin). TDC packets in the batch are silently ignored. Increments
+        ``pixel_count_total`` for the running stop-message summary.
+        """
+        nonlocal first_pixel_time, start_message_sent, acquisition_start_time
+        nonlocal pixel_count_total, last_flush_time
+
+        current_time = time.time()
+
+        # Mirror the start-message logic from data_callback so the first data
+        # batch can publish the start message if the main-loop reset fired
+        # mid-sleep.  Guarded by start_message_sent + scan_name like the timing path.
+        if not start_message_sent and message_queue is not None and scan_name is not None:
+            acquisition_start_time = current_time
+            start_msg = TimePixStart(
+                scan_name=scan_name,
+                tdc_frequency_hz=tdc_frequency,
+                t_delta_ns=t_delta_ns,
+                t_cycle_ns=t_cycle / 1e3,
+                n_bins=n_bins,
+                detector_size_x=detector_size_x,
+                detector_size_y=detector_size_y,
+                flush_interval_s=flush_interval,
+                cycles_per_flush=max(1, int(flush_interval * tdc_frequency)),
+                tdc_channel=tdc_ch,
+                tdc_edge=tdc_edge,
+                collapse_y=collapse_y,
+                zmq_port=zmq_port,
+                tcp_port=port,
+                mode="alignment",
+            )
+            try:
+                message_queue.put_nowait(start_msg.model_dump())
+                start_message_sent = True
+                logger.info(f"Queued alignment start message for scan: {scan_name}")
+                print(f"Queued alignment start message for scan: {scan_name}")
+            except queue.Full:
+                logger.warning("Message queue full, dropping start message")
+
+        if result.n_pixels == 0:
+            return
+
+        if first_pixel_time is None:
+            first_pixel_time = current_time
+        # Arm the wall-clock gate on first data so the first emit fires after a
+        # full window rather than immediately on partial data.
+        if last_flush_time is None:
+            last_flush_time = time.monotonic()
+
+        # Vectorized 2D accumulate. local_accumulator is shape (X, Y, 1) in
+        # alignment mode (forced via n_bins=1, collapse_y=False above), so all
+        # pixels go into time-bin 0.
+        np.add.at(local_accumulator, (result.pixel_x, result.pixel_y, 0), 1)
+        pixel_count_total += int(result.n_pixels)
+
+    def emit_alignment_flush_if_due() -> bool:
+        """Wall-clock-gated flush for alignment mode (no TDC dependency).
+
+        Mirrors the critical-section structure of ``emit_flush_if_due``:
+        check the gate, swap the accumulator, push to xyt_queue — all under
+        ``xyt_lock`` so concurrent callers (callback thread + main loop)
+        cannot double-emit. Empty arrays are still emitted so the UI gets
+        regular "0 cps" updates during data droughts.
+        """
+        nonlocal last_flush_time, flush_count, xyt_array
+
+        with xyt_lock:
+            if last_flush_time is None:
+                # Not yet armed — first data batch (or main-loop tick after data)
+                # will set last_flush_time.  Arming here keeps the silence-watchdog
+                # behavior: even with zero pixels we will emit on the next tick.
+                last_flush_time = time.monotonic()
+                return False
+            if (time.monotonic() - last_flush_time) < flush_interval:
+                return False
+
+            xyt_array += local_accumulator
+            array_copy = xyt_array.copy()
+            xyt_array.fill(0)
+            local_accumulator.fill(0)
+
+            flush_count += 1
+            flush_number = flush_count
+            pixels_in_flush = int(array_copy.sum())
+            last_flush_time = time.monotonic()
+
+        flush_metadata = {
+            "scan_name": scan_name,
+            "flush_number": flush_number,
+            # cycles_* kept for downstream compatibility with the timing-mode
+            # consumers; meaningless in alignment mode.
+            "cycles_in_flush": 1,
+            "total_cycles": flush_number,
+            "pixels_in_flush": pixels_in_flush,
+            "pixels_discarded_before_trigger": 0,
+            "pixels_discarded_outside_window": 0,
+        }
+        try:
+            xyt_queue.put_nowait((array_copy, flush_metadata))
+            logger.info(f"Alignment flush #{flush_number}: pixels={pixels_in_flush}")
+            return True
+        except queue.Full:
+            logger.warning("Processing queue full, dropping alignment flush")
+            return False
+
+    def do_final_flush_alignment() -> None:
+        """Publish residual data in local_accumulator before stop in alignment mode."""
+        nonlocal flush_count, xyt_array
+
+        with xyt_lock:
+            xyt_array += local_accumulator
+            has_data = bool(np.any(xyt_array))
+            if has_data:
+                array_copy = xyt_array.copy()
+            xyt_array.fill(0)
+
+        local_accumulator.fill(0)
+
+        if not has_data:
+            return
+
+        flush_count += 1
+        pixels_in_flush = int(array_copy.sum())
+        flush_metadata = {
+            "scan_name": scan_name,
+            "flush_number": flush_count,
+            "cycles_in_flush": 1,
+            "total_cycles": flush_count,
+            "pixels_in_flush": pixels_in_flush,
+            "pixels_discarded_before_trigger": 0,
+            "pixels_discarded_outside_window": 0,
+        }
+        try:
+            xyt_queue.put_nowait((array_copy, flush_metadata))
+            logger.info(f"Alignment final flush #{flush_count}: pixels={pixels_in_flush}")
+        except queue.Full:
+            logger.warning("Processing queue full, dropping final alignment flush")
+
+    # Wire the appropriate callback + flush helpers into the server.
+    if alignment:
+        server.set_data_callback(data_callback_alignment)
+        _emit_flush = emit_alignment_flush_if_due
+        _final_flush = do_final_flush_alignment
+        # Sleep half a window so the wall-clock gate fires near its target rate
+        # (30 Hz → 16 ms tick).  At 1 Hz this becomes 0.5 s, still snappier than
+        # the 1 s default and harmless.
+        main_loop_sleep_s = max(0.05, min(1.0, flush_interval / 2.0))
+    else:
+        server.set_data_callback(data_callback)
+        _emit_flush = emit_flush_if_due
+        _final_flush = do_final_flush
+        main_loop_sleep_s = 1.0
 
     try:
         # Start the server
@@ -533,15 +869,30 @@ def main(
         while server.running:
             # Check if we should exit due to client disconnect
             if exit_on_disconnect and server.client_disconnected_event.is_set():
-                logger.info("Client disconnected, initiating shutdown...")
+                logger.info("Client disconnected, initiating shutdown (scan=%s)...", scan_name)
                 # Send stop message before shutdown
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    # Drain any TDC/pixel batches still sitting in
+                    # SocketDataServer.message_queue before snapshotting
+                    # cycle_count.  Without this, trailing TDCs that
+                    # arrived over TCP but haven't yet been routed
+                    # through data_callback are silently dropped from
+                    # stop.total_cycles (the dominant component of the
+                    # ~flush_interval-of-cycles "loss" observed in
+                    # short-disconnect experiments).
+                    if not server.wait_for_idle(timeout=5.0):
+                        logger.warning(
+                            "ingest queue did not drain within 5s; "
+                            "stop.total_cycles may understate the true cycle count"
+                        )
+                    _final_flush()
+                    _wait_for_xyt_drain()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
                     stop_msg = TimePixStop(
                         scan_name=scan_name,
                         total_flushes=flush_count,
-                        total_cycles=cycle_count,
-                        total_packets=event_count,
+                        total_cycles=0 if alignment else cycle_count,
+                        total_packets=pixel_count_total if alignment else event_count,
                         acquisition_duration_s=acquisition_duration,
                         pixels_discarded_before_trigger=int(pixels_before_trigger),
                         pixels_discarded_outside_window=int(pixels_outside_window),
@@ -551,7 +902,6 @@ def main(
                         logger.info(f"Queued stop message (client disconnect) for scan: {scan_name}")
                         print(f"Queued stop message (client disconnect) for scan: {scan_name}")
                         stop_message_sent_on_disconnect = True
-                        time.sleep(0.5)  # Give worker time to send
                     except queue.Full:
                         logger.warning("Message queue full, dropping stop message")
                 break
@@ -560,26 +910,66 @@ def main(
             if server.client_connected and not was_client_connected:
                 heartbeat.set_state(ServerState.STREAMING)
                 was_client_connected = True
-                # Reset stop message flag when new client connects
+                # ── Authoritative per-acquisition reset ──────────────────────
+                # scan_name is generated here and nowhere else (single source of truth).
+                # All counters declared above are also reset here for each new client.
                 stop_message_sent_on_disconnect = False
-                # Reset acquisition state for new client connection (new acquisition)
                 start_message_sent = False
                 acquisition_start_time = None
                 scan_name = generate_scan_name()
-                # Reset counters for new acquisition
                 cycle_count = 0
                 flush_count = 0
                 event_count = 0
+                pixel_count_total = 0
                 pixels_before_trigger = 0
                 pixels_outside_window = 0
                 t_zero = None
                 first_pixel_time = None
+                # Wall-clock gate: clear so the first TDC of the new
+                # acquisition re-arms the clock (instead of carrying
+                # over a stale t_last from the previous client).
+                last_flush_time = None
+                cycles_since_last_flush = 0
                 # Clear arrays for fresh start
                 with xyt_lock:
                     xyt_array.fill(0)
                 local_accumulator.fill(0)
                 logger.info(f"New client connected - resetting acquisition state. New scan: {scan_name}")
                 print(f"New client connected - resetting acquisition state. New scan: {scan_name}")
+
+                # Send start message immediately on client connect so that ZMQ
+                # subscribers receive it before any data — even when count rates
+                # are zero and data_callback may never fire before STOP.
+                # data_callback also tries to send the start message (guarded by
+                # start_message_sent) as an immediate fallback for the first
+                # data batch if the main loop is mid-sleep when data arrives.
+                if message_queue is not None:
+                    acquisition_start_time = time.time()
+                    start_msg = TimePixStart(
+                        scan_name=scan_name,
+                        tdc_frequency_hz=tdc_frequency,
+                        t_delta_ns=t_delta_ns,
+                        t_cycle_ns=t_cycle / 1e3,
+                        n_bins=n_bins,
+                        detector_size_x=detector_size_x,
+                        detector_size_y=detector_size_y,
+                        flush_interval_s=flush_interval,
+                        cycles_per_flush=max(1, int(flush_interval * tdc_frequency)),
+                        tdc_channel=tdc_ch,
+                        tdc_edge=tdc_edge,
+                        collapse_y=collapse_y,
+                        zmq_port=zmq_port,
+                        tcp_port=port,
+                        mode="alignment" if alignment else "timing",
+                    )
+                    try:
+                        message_queue.put_nowait(start_msg.model_dump())
+                        start_message_sent = True
+                        logger.info("Queued start message on connect for scan: %s", scan_name)
+                        logger.info("Acquisition session started: %s", start_msg.model_dump())
+                        print(f"Queued start message on connect for scan: {scan_name}")
+                    except queue.Full:
+                        logger.warning("Message queue full, dropping start message on connect")
             elif not server.client_connected and was_client_connected:
                 # Client just disconnected - send stop message
                 heartbeat.set_state(ServerState.READY)
@@ -587,12 +977,20 @@ def main(
 
                 # Send stop message when client disconnects (even without --exit-on-disconnect)
                 if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+                    # See exit_on_disconnect branch above for the rationale.
+                    if not server.wait_for_idle(timeout=5.0):
+                        logger.warning(
+                            "ingest queue did not drain within 5s; "
+                            "stop.total_cycles may understate the true cycle count"
+                        )
+                    _final_flush()
+                    _wait_for_xyt_drain()
                     acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
                     stop_msg = TimePixStop(
                         scan_name=scan_name,
                         total_flushes=flush_count,
-                        total_cycles=cycle_count,
-                        total_packets=event_count,
+                        total_cycles=0 if alignment else cycle_count,
+                        total_packets=pixel_count_total if alignment else event_count,
                         acquisition_duration_s=acquisition_duration,
                         pixels_discarded_before_trigger=int(pixels_before_trigger),
                         pixels_discarded_outside_window=int(pixels_outside_window),
@@ -602,12 +1000,27 @@ def main(
                         logger.info(f"Queued stop message (client disconnected) for scan: {scan_name}")
                         print(f"Queued stop message (client disconnected) for scan: {scan_name}")
                         stop_message_sent_on_disconnect = True
-                        time.sleep(0.5)  # Give worker time to send
                     except queue.Full:
                         logger.warning("Message queue full, dropping stop message")
+                    # ``do_final_flush`` does not clear the wall-clock gate.  If we leave
+                    # ``last_flush_time`` / ``cycles_since_last_flush`` armed, the main-loop
+                    # watchdog ``_emit_flush()`` in this same iteration can enqueue another
+                    # flush *after* the stop.  The ZMQ worker prioritizes control messages, so
+                    # subscribers see stop then a stale event (previous scan_name), which
+                    # breaks strict per-run tests and can violate cycle conservation.
+                    last_flush_time = None
+                    cycles_since_last_flush = 0
 
-            time.sleep(1)
+            time.sleep(main_loop_sleep_s)
             current_time = time.time()
+
+            # Silence watchdog: if the upstream goes quiet (no TDCs in timing
+            # mode, or no pixels in alignment mode), the callback cannot push
+            # the gate.  Tick it from the main loop too so the last buffered
+            # window is released even when the wire is idle.  Safe to call
+            # concurrently with the callback thread: both emit helpers are
+            # internally locked via xyt_lock.
+            _emit_flush()
 
             # Show/ update overall stats
             if current_time - last_stats_time >= stats_update_time:
@@ -727,14 +1140,25 @@ def main(
         print("\nShutting down server...")
 
     finally:
-        # Send stop message (only if we haven't already sent it on client disconnect)
-        if message_queue is not None and not stop_message_sent_on_disconnect:
+        _shutdown_start = time.time()
+        logger.info("Shutdown sequence initiated")
+        # Send stop message only if a start was sent and stop hasn't been sent yet.
+        # Guarding on start_message_sent prevents an orphan stop from being published
+        # with the server's initial UUID when the client connection was never detected
+        # (e.g. connect+disconnect happened within one main-loop sleep cycle).
+        if message_queue is not None and start_message_sent and not stop_message_sent_on_disconnect:
+            if not server.wait_for_idle(timeout=5.0):
+                logger.warning(
+                    "ingest queue did not drain within 5s; stop.total_cycles may understate the true cycle count"
+                )
+            _final_flush()
+            _wait_for_xyt_drain()
             acquisition_duration = (time.time() - acquisition_start_time) if acquisition_start_time else 0.0
             stop_msg = TimePixStop(
                 scan_name=scan_name,
                 total_flushes=flush_count,
-                total_cycles=cycle_count,
-                total_packets=event_count,
+                total_cycles=0 if alignment else cycle_count,
+                total_packets=pixel_count_total if alignment else event_count,
                 acquisition_duration_s=acquisition_duration,
                 pixels_discarded_before_trigger=int(pixels_before_trigger),
                 pixels_discarded_outside_window=int(pixels_outside_window),
@@ -742,9 +1166,7 @@ def main(
             try:
                 message_queue.put_nowait(stop_msg.model_dump())
                 logger.info(f"Queued stop message for scan: {scan_name}")
-                print(f"Queued stop message for scan: {scan_name}")  # Also print to console
-                # Give worker time to send the stop message
-                time.sleep(0.5)  # Increased wait time
+                print(f"Queued stop message for scan: {scan_name}")
             except queue.Full:
                 logger.warning("Message queue full, dropping stop message")
                 print("WARNING: Message queue full, dropping stop message")
@@ -772,6 +1194,7 @@ def main(
             if input_thread.is_alive():
                 logger.warning("Input listener did not finish in time")
 
+        logger.info("Shutdown sequence complete (elapsed %.1fs)", time.time() - _shutdown_start)
         print("Server stopped successfully")
 
 
