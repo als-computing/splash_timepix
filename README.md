@@ -6,6 +6,8 @@ Streaming and pre-processing time-resolved TimePix3 detector data
 
 This package provides a pipeline for streaming, pre-processing, and visualizing data from Amsterdam Scientific Instruments (ASI) TimePix3 detectors. It implements time-resolved spectroscopy binning with TDC (Time-to-Digital Converter) triggering and supports both real-time visualization and ZMQ publishing for downstream analysis.
 
+It also ships a PySide6 **acquisition UI** (`tpx-ui`) that drives the full pipeline — beam alignment, acquisition control, live heatmaps/spectra, clustering parameter sweeps, unified logs, and a session timeline (see [Acquisition UI](#5-acquisition-ui-tpx-ui)).
+
 ## Platform Requirements
 
 - **Python 3.9+**
@@ -67,12 +69,16 @@ show the bundled icon instead of the gear.
 ### Dependencies
 
 - `numpy` - Array operations
+- `h5py` - HDF5 I/O (centroider outputs)
 - `opencv-python` - Real-time visualization
 - `pyzmq` - ZMQ publishing
 - `msgpack` - Serialization for ZMQ
 - `typer` - CLI interface
 - `psutil` - System monitoring
+- `requests` - HTTP client (Serval status)
 - `pydantic` - Message schema validation
+
+UI extra (`pip install -e ".[ui]"`): `PySide6`, `pyqtgraph`.
 
 ## Configuration
 
@@ -91,10 +97,11 @@ Additional markdown guides in the repository:
 - [Sample start message](info/SAMPLE_START_MESSAGE.md) — example ZMQ start message (wire format and fields)
 - [UDP receive buffers (first-time Linux setup)](info/UDP_RECEIVER_BUFFER_LIMITS.md) —  raise `net.core.rmem_*` for Serval/streaming hosts (`sysctl.d` drop-in)
 - [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration).
+- [Centroider tutorial](info/centroider_tutorial.md) — scientist's guide to the Centroider tab (clustering parameter sweeps on `.tpx3` files).
 
 ## Architecture
 
-The system consists of four main components:
+The system consists of five main components:
 
 ### 1. Socket Server (`socket_server.py`)
 Multi-threaded TCP server that receives 12-byte TimePix3 packets and parses them with NumPy (`parser`):
@@ -109,6 +116,8 @@ Main application implementing time-resolved binning:
 - Bins pixel events into 3D arrays (x, y, time) based on TDC triggers
 - Flushes accumulated 3D arrays to processing queue
 - Provides statistics display and user commands
+- Publishes a heartbeat with queue depths and server state on a separate ZMQ port (default 5658) so the UI can monitor pipeline health
+- Supports an `--alignment` mode: TDCs are ignored and wall-clock-gated 2D X/Y histograms are emitted at 1–30 Hz (used by the UI's Alignment tab)
 
 ### 3. Worker Threads
 Two alternative workers for consuming 3D arrays:
@@ -132,9 +141,30 @@ Simulated TimePix3 data source for testing:
 - Configurable pixel count rate and TDC frequency
 - Interactive CLI for control
 
+### 5. Acquisition UI (`tpx-ui`)
+PySide6 desktop application (`src/splash_timepix/ui/`) that orchestrates Serval, the streaming server, and live-cli, and visualizes the ZMQ stream. Tabs:
+
+- **Alignment** (default) — live 2D X/Y heatmap at 1–30 Hz for beam alignment, with grayscale LUT, binarize/log/integrate display modes, target overlay, and a rolling cps strip chart. Includes a local simulator mode that needs no hardware.
+- **Operator** — acquisition control (Start / Preview / Simulator / Replay), live current-flush and running-average heatmaps, ROI cursors with energy-calibrated spectra, pipeline queue monitoring, and saving of averaged data (PNG, CSV, energy/time axes, JSON metadata) under a shared per-scan slug.
+- **Logs** — unified system/server/Serval log viewer; all logs are also written to `<repo>/logs/` for post-mortem debugging.
+- **Timeline** — chronological overview of the session's runs and log events in one place.
+- **Centroider** — clustering parameter sweeps (eps-s × eps-t) on `.tpx3` files via the bundled `tpx3dump`, with side-by-side x-histogram comparison. See the [Centroider tutorial](info/centroider_tutorial.md).
+
+Launch with:
+```bash
+tpx-ui
+```
+Widget preferences (acquisition settings, alignment display options) persist across sessions. Only one UI instance can run at a time (a lock with a takeover prompt guards against double-starts).
+
 ## Quick Start - Basic Usage Examples
 
-The package installs **`tpx-stream`** as the console entry point for the streaming app (see `pyproject.toml`); `python -m splash_timepix.app` is equivalent.
+The package installs three console entry points (see `pyproject.toml`):
+
+| Command | Equivalent | Purpose |
+|---------|------------|---------|
+| `tpx-stream` | `python -m splash_timepix.app` | Streaming server |
+| `tpx-ui` | `python -m splash_timepix.ui.main` | Acquisition UI |
+| `tpx-sim` | `python -m splash_timepix.simulator_cli` | Simulated data source |
 
 ### Production Mode (ZMQ Publishing)
 
@@ -154,7 +184,7 @@ python -m splash_timepix.example_zmq_sub
 
 **Terminal 3** - Start detector:
 ```bash
-./ASI/live-cli_alpha-1/live-cli
+./ASI/live-cli
 ```
 
 ### Display Real-time Data (Live Plotting)
@@ -167,9 +197,9 @@ tpx-stream --plot
 **Terminal 2** - Start data source:
 ```bash
 # Using real detector
-./ASI/live-cli_alpha-1/live-cli
+./ASI/live-cli
 # OR replaying from file
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
+./ASI/live-cli --source-files path/to/recording.tpx3
 # OR using the simulator
 python -m splash_timepix.simulator_cli
 ```
@@ -194,7 +224,7 @@ cps 100000
 tdc 0.1
 start 60
 # OR (III) Using Replay From File (live-cli)
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/recording.tpx3
+./ASI/live-cli --source-files path/to/recording.tpx3
 ```
 
 ## Command-Line Options
@@ -214,13 +244,21 @@ python -m splash_timepix.app [OPTIONS]
 - `--buffer-size INT`: Internal message queue size (default: 1000)
 - `--callback-batch-size INT`: Number of parsed packets to batch per callback (default: 10000)
 - `--zmq-port INT`: ZMQ publishing port (default: 5657)
+- `--heartbeat-port INT`: ZMQ heartbeat/status port (default: 5658)
+- `--exit-on-disconnect`: Stop the server when the client disconnects (default: keep running)
 
 **Time-Resolved Binning Options:**
-- `--tdc-ch INT`: TDC channel to use - 0=both, 1=ch1, 2=ch2 (default: 1)
+- `--tdc-ch INT`: TDC channel to use - 0=both, 1=ch1, 2=ch2 (default: 0)
 - `--tdc-edge STR`: TDC edge to trigger on - "rising" or "falling" (default: rising)
-- `--tdc-frequency` FLOAT: Expected TDC trigger frequency in Hz (default: 1.0)
-- `--t-delta-ns FLOAT`: Time bin width in nanoseconds (default: 10)
-- `--flush-interval FLOAT`: Time between 3D x, y, t array flushes in seconds (default: 2.0)
+- `--tdc-frequency FLOAT`: Expected TDC trigger frequency in Hz (default: 100.0)
+- `--t-delta-ns FLOAT`: Time bin width in nanoseconds (default: -1 = auto; bin width is derived from `--n-bins`)
+- `--n-bins INT`: Number of time bins per TDC cycle, used when `--t-delta-ns` is not given (default: 350)
+- `--flush-interval FLOAT`: Time between 3D x, y, t array flushes in seconds (default: 1.0)
+- `--collapse-y`: Sum over the Y axis and emit 2D (x, t) arrays instead of 3D
+
+**Alignment Mode:**
+- `--alignment`: Ignore TDCs and emit wall-clock-gated 2D X/Y histograms (used by the UI's Alignment tab)
+- `--alignment-rate-hz FLOAT`: Flush rate for alignment mode, 1–30 Hz (default: 30.0)
 
 **Display Options:**
 - `--stats-update-time INT`: Stats refresh interval in seconds (default: 1)
@@ -231,6 +269,8 @@ After starting the test source, use these commands:
 
 - `cps <value>` - Set pixel count rate (events/second)
 - `tdc <value>` - Set TDC frequency (Hz)
+- `count <y/n>` - Enable/disable packet counting statistics
+- `batch <seconds>` - Wire-level burst batching interval (0 disables; sends per-packet)
 - `start <duration>` - Start streaming for duration (seconds)
 - `stop` - Stop streaming data
 - `quit` - Exit
@@ -244,12 +284,13 @@ Published when data acquisition begins (first data arrives):
 ```python
 {
     'msg_type': 'start',
-    'scan_name': 'acquisition_20250112T160536Z_8b850728',
+    'scan_name': 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f23456789',  # full UUID4
     'tdc_frequency_hz': 10.0,
     'detector_size_x': 256,
     'detector_size_y': 256,
     'n_bins': 350,
     't_delta_ns': 285714.29,
+    'mode': 'timing',  # 'timing' (default) or 'alignment'
     # ... other configuration parameters
 }
 ```
@@ -280,7 +321,7 @@ Published when data acquisition ends (client disconnects or server shuts down):
 ```python
 {
     'msg_type': 'stop',
-    'scan_name': 'acquisition_20250112T160536Z_8b850728',
+    'scan_name': 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f23456789',  # same UUID as start
     'total_flushes': 9,
     'total_cycles': 99,
     'total_packets': 50000,
@@ -385,9 +426,13 @@ The application bins pixel events into 3D arrays based on TDC triggers:
 4. Worker either **plots** or **publishes** the array
 
 **Key parameters:**
+- `tdc_frequency`: Inverse of total time window to capture per TDC trigger (`t_cycle = 1 / tdc_frequency`)
 - `t_delta`: Width of each time bin (temporal resolution)
-- `tdc_frequency`: Inverse of total time window to capture per TDC trigger
-- `n_bins`: Automatically calculated as `ceil((1 / tdc_frequency) / t_delta)`
+- `n_bins`: Number of time bins per cycle
+
+You specify either the bin width or the bin count; the other is derived:
+- With `--t-delta-ns` set: `n_bins = ceil(t_cycle / t_delta)`
+- Without it (default): `t_delta = t_cycle / n_bins` (with `--n-bins`, default 350)
 
 **Pixels outside the time window** or **before the first TDC** are discarded and counted for diagnostics.
 
@@ -401,13 +446,13 @@ The application bins pixel events into 3D arrays based on TDC triggers:
 ### Live Detector (`live-cli`)
 Real-time streaming from TimePix3:
 ```bash
-./ASI/live-cli_alpha-1/live-cli
+./ASI/live-cli
 ```
 
 ### Recorded Data (`live-cli --source-files`)
 Replay recorded `.tpx3` files:
 ```bash
-./ASI/live-cli_alpha-1/live-cli --source-files path/to/file.tpx3
+./ASI/live-cli --source-files path/to/file.tpx3
 ```
 
 ## Development
@@ -467,7 +512,7 @@ See [info/SOCKET_SERVER_README.md](info/SOCKET_SERVER_README.md) for server deta
 ### Queue overflow warnings
 - Increase `--buffer-size`
 - Reduce callback processing time
-- Increase `--callback_batch_size`
+- Increase `--callback-batch-size`
 - Check if worker thread is keeping up
 
 ### Qt warnings on shutdown

@@ -73,7 +73,7 @@ This sends data for 10 seconds. Type `stop` or wait for the run to finish.
 
 - **splash_timepix server (Terminal 1):** Logs when start/stop are queued and when flushes are published.
 - **ArroyoXPS listener (Terminal 2):** Connects to `tcp://localhost:5657`, receives and logs:
-  - **Start:** e.g. `Dummy operator received START: scan_name=acquisition_YYYYMMDDTHHMMSSZ_xxxxxxxx` (UTC, ISO 8601)
+  - **Start:** e.g. `Dummy operator received START: scan_name=<uuid4>` (scan_name is a full UUID4, e.g. `a1b2c3d4-e5f6-4a7b-8c9d-0e1f23456789`)
   - **Events:** e.g. `Dummy operator received EVENT with image shape: (256, 256, 350)` (shape may vary)
   - **Stop:** e.g. `Dummy operator received STOP`
 - **Simulator (Terminal 3):** Sends packets to the server; `start 10` runs for 10 seconds.

@@ -313,11 +313,13 @@ python tools/centroider/sweep.py \
 
 **Q: Where is tpx3dump?**
 
-The application uses the Luna binary bundled with the software:
+The application uses the binary bundled with the software:
 ```
-software/luna/0.4.3/bin/tpx3dump
+<repo>/ASI/tpx3dump
 ```
-No additional installation is needed; it is found automatically.
+No additional installation is needed; it is found automatically. To use a
+different build, set the `TPX3DUMP` environment variable to its full path
+before launching (applies to both the UI and the command-line sweep tool).
 
 **Q: Why are ms or s not accepted as time units?**
 
