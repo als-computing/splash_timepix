@@ -11,7 +11,11 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE.txt" }
 keywords = ["timepix", "socket", "server", "data-streaming", "numpy"]
-authors = [{ name = "Johannes Mahl", email = "jmahl@lbl.gov" }]
+authors = [
+  { name = "Johannes Mahl", email = "jmahl@lbl.gov" },
+  { name = "Gabriel Gazolla", email = "gabrielgazolla@lbl.gov" },
+  { name = "Dylan McReynolds", email = "dmcreynolds@lbl.gov" },
+]
 maintainers = [{ name = "Johannes Mahl", email = "jmahl@lbl.gov" }]
 
 classifiers = [

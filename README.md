@@ -530,7 +530,7 @@ application is correctly identifying and discarding events that fall outside the
 configured time window. In production with real detector hardware, similar edge
 cases may occur due to timing jitter, and the application handles them correctly.
 
-## License
+## Copyright Notice
 
 Detector Interface for Streaming, Control, and Open-source integration (DISCO)
 Copyright (c) 2026, The Regents of the University of California, through
