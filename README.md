@@ -550,6 +550,10 @@ perform publicly and display publicly, and to permit others to do so.
 This software is distributed under a BSD-style license (with an added
 Enhancements paragraph). See [LICENSE.txt](LICENSE.txt) for the full terms.
 
-> Note: The third-party binaries under `ASI/` (e.g. Serval, `live-cli`,
-> `tpx3dump`) are provided by Amsterdam Scientific Instruments and are covered
-> by their own respective licenses, not the DISCO license above.
+> Note: The third-party binaries that belong under `ASI/` (e.g. Serval,
+> `live-cli`, `tpx3dump`) are provided by Amsterdam Scientific Instruments and
+> are covered by their own respective licenses, not the DISCO license above.
+> They are **licensed/proprietary software and are intentionally NOT included
+> in this repository**. Obtain them directly from ASI and place them in the
+> `ASI/` folder locally — see [`ASI/README.md`](ASI/README.md) for the expected
+> files and layout.

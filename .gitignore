@@ -13,12 +13,22 @@ venv/
 .cache
 /.venv/
 
-# ASI application logs
-ASI/logs/
-
-# Large ASI binary (144 MB) — exceeds GitHub's 100 MB push limit.
-# Distributed as ASI/tpx3dump.zip instead; keep the raw binary out of git.
-ASI/tpx3dump
+# --- ASI licensed software (Amsterdam Scientific Instruments) ---
+# Serval, live-cli, tpx3dump, etc. are proprietary/licensed binaries, NOT open
+# source. They must never be committed or distributed publicly (see ASI/README.md).
+# Ignore everything under ASI/ except the README and folder-structure placeholders.
+ASI/*
+!ASI/README.md
+!ASI/long-daq/
+ASI/long-daq/*
+!ASI/long-daq/.gitkeep
+!ASI/ui-updates/
+ASI/ui-updates/*
+!ASI/ui-updates/.gitkeep
 
 # UI subsystem logs (written by LogManager)
 logs/
+
+# Temporary ASI-removal backup artifacts (local only, never commit)
+/.asi_local_backup/
+/ASI_REMOVAL_BACKUP.bundle
