@@ -1,0 +1,24 @@
+[package]
+name = "tpx3parser"
+version = "0.1.0"
+edition = "2021"
+description = "ASI TimePix3 .tpx3 file parser — reads raw detector data and writes HDF5 with the same schema as ASI tpx3dump --disable-clustering"
+license = "BSD-3-Clause"
+
+[[bin]]
+name = "tpx3parser"
+path = "src/main.rs"
+
+[dependencies]
+memmap2 = "0.9"
+rayon = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+hdf5-metno = { version = "0.10", features = ["lzf"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

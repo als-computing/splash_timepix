@@ -32,3 +32,4 @@ logs/
 # Temporary ASI-removal backup artifacts (local only, never commit)
 /.asi_local_backup/
 /ASI_REMOVAL_BACKUP.bundle
+tools/tpx3parser/target/
