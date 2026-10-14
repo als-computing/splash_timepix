@@ -10,7 +10,7 @@ Usage:
        python -m splash_timepix.app --tdc-frequency 10 --flush-interval 1.0
 
     2. Run this script (start subscriber BEFORE simulator) from the repository root:
-           python tests/test_start_stop_quick.py
+           python tests/streaming/test_start_stop_quick.py
        (Not under src/ as a package module; do not use python -m splash_timepix.tests....)
        Wait until it prints "Waiting for messages..."
 

@@ -465,10 +465,10 @@ For step-by-step testing (server, simulator, ZMQ subscribers, optional ArroyoXPS
 pytest
 
 # Run start/stop message tests
-pytest tests/test_start_stop_messages.py -v
+pytest tests/streaming/test_start_stop_messages.py -v
 
 # Run quick manual test (requires server running)
-python tests/test_start_stop_quick.py
+python tests/streaming/test_start_stop_quick.py
 ```
 
 ### Run Pre-commit Checks

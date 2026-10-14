@@ -163,7 +163,7 @@ python -m splash_timepix.example_listener
 
 ```bash
 cd /path/to/splash_timepix
-python tests/test_start_stop_messages.py
+python tests/streaming/test_start_stop_messages.py
 ```
 
 This starts server and simulator in subprocesses, subscribes to ZMQ, and checks that start/event/stop messages are received.
@@ -173,7 +173,7 @@ This starts server and simulator in subprocesses, subscribes to ZMQ, and checks 
 ```bash
 cd /path/to/splash_timepix
 # Schema validation + start/event/stop integration coverage
-pytest tests/test_start_stop_messages.py -v
+pytest tests/streaming/test_start_stop_messages.py -v
 ```
 
 The schema-only assertions live inside `class TestSchemas` in that file; the
