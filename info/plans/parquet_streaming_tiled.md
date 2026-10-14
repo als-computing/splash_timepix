@@ -291,6 +291,39 @@ The whole body of `offer()` is wrapped so it can never raise into `data_callback
   over months, because today the `.tpx3` is both the `tpx3dump` input and the recovery path for
   an `incomplete` scan.
 
+### 6.4 Implementation notes (Phase 1, as built)
+
+Where the code departs from the text above, the code is right and this records why:
+
+- `--parquet-roll-mb` is a float (tests roll at 0.25 MB; the UI preference stays an integer
+  clamped to 64–4096) and `--parquet-queue-max-rows` exists as a flag so the drop/block
+  policies can be exercised end to end.
+- After a roll the writer opens the next file **immediately**, so a `.tmp` exists whenever a
+  scan is in progress; an eagerly opened file that never receives a row is discarded at stop
+  rather than left as an empty trailing part. A table that never received any row still gets
+  one schema-only file, so every table directory is a valid dataset.
+- The roll check runs after each row-group write; between writes a file can exceed
+  `roll_bytes` by at most one row group.
+- The metadata model is split into `ScanFields` (per scan), `ParquetScanMetadata` (per file,
+  the footer document) and `ScanSummary` (`_scan_meta.json`); `read_scan_metadata()` returns
+  one of the latter two depending on whether it is given a file or a directory, and a missing
+  sidecar yields a summary rebuilt from the footers with `status="incomplete"`.
+- The scan lifecycle in `app.py` tracks `scan_open` rather than relying on
+  `start_message_sent`, so `sink.stop()` runs for every scan — including `--plot` runs that
+  publish nothing on ZMQ.
+- The "does not slow ZMQ" test compares the server's **CPU time per wire packet** with and
+  without the sink, not `total_cycles`: the in-process simulator paces itself by wall clock and
+  the packet count it manages in a fixed window varies by 2× between runs, independent of the
+  server. Measured on the development machine: 24–33 µs per packet in both configurations;
+  the sink itself costs ~12 ns per hit in `offer()` and the whole process ran at 0.32 cores
+  while writing 2 Mhit/s at 3.8 B/hit (`tools/bench_parquet_sink.py`). No writer-thread
+  operation holds the GIL for longer than the idle baseline (0.7 ms), so the sink cannot starve
+  the TCP reader.
+- The ZMQ worker now publishes pending control messages before an event it has just taken
+  from the queue (a start queued while the worker was blocked could previously be overtaken by
+  the first flush), and `_wait_for_xyt_drain` waits on `unfinished_tasks` rather than
+  `empty()` so a stop is never queued before the last event has actually been sent.
+
 ---
 
 ## 7. Output schema

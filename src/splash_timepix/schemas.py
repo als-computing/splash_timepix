@@ -93,6 +93,12 @@ class TimePixStop(BaseModel):
         default=0, description="Total pixels discarded before first TDC trigger"
     )
     pixels_discarded_outside_window: int = Field(default=0, description="Total pixels discarded outside time window")
+    # Parquet output of this scan (absent when tpx-stream ran without --parquet-dir).
+    # parquet_dir is the one authoritative link between a run and its files — never "the newest dir".
+    parquet_dir: Optional[str] = Field(default=None, description="Directory holding this scan's parquet files")
+    parquet_status: Optional[str] = Field(default=None, description="complete | incomplete | error")
+    parquet_rows: Optional[int] = Field(default=None, description="Event rows written to parquet (unbinned)")
+    parquet_dropped_rows: Optional[int] = Field(default=None, description="Rows dropped because the queue was full")
 
 
 class TimePixEvent(BaseModel):

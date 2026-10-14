@@ -22,11 +22,14 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from splash_timepix.atomic_io import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
-# Bumped from 1 → 2 when alignment_* keys were added. Purely informational —
-# validate_and_clamp tolerates missing/unknown keys, so v1 files load cleanly.
-PREFERENCES_VERSION = 2
+# Bumped from 1 → 2 when alignment_* keys were added, 2 → 3 for the parquet keys.
+# Purely informational — validate_and_clamp tolerates missing/unknown keys, so
+# older files load cleanly.
+PREFERENCES_VERSION = 3
 
 # Combo *display text* values. These must match the items added to the combo
 # boxes in OperatorTab._setup_ui, because restoration uses
@@ -48,12 +51,13 @@ ALIGNMENT_RATE_HZ_RANGE = (1, 30)
 # successful acquisition save. Gives each output file group a human-readable
 # sequential prefix independent of Serval's internal file naming.
 SCAN_COUNTER_RANGE = (1, 999_999)
+# Parquet output: file roll size in MB (see tpx-stream --parquet-roll-mb).
+PARQUET_ROLL_MB_RANGE = (64, 4096)
 # Manual min/max levels span the practical range of uint32 alignment counts;
 # these are sanity bounds, not perceptually-tuned defaults.
 ALIGNMENT_LEVEL_RANGE = (0, 2**31 - 1)
 
 _PREFS_FILENAME = "operator_prefs.json"
-_TMP_SUFFIX = ".tmp"
 
 
 def default_preferences() -> Dict[str, Any]:
@@ -90,6 +94,11 @@ def default_preferences() -> Dict[str, Any]:
         # successful acquisition save. Stored here so it persists across
         # app restarts and accumulates across a full beamtime session.
         "scan_counter": 1,
+        # Parquet output (Start and Replay modes). On by default: every scan gets
+        # parquet files next to its .tpx3. parquet_roll_mb is the file roll size
+        # passed to tpx-stream --parquet-roll-mb.
+        "write_parquet": True,
+        "parquet_roll_mb": 512,
     }
 
 
@@ -280,6 +289,17 @@ def validate_and_clamp(raw: Any) -> Dict[str, Any]:
         fallback=defaults["scan_counter"],
         name="scan_counter",
     )
+    out["write_parquet"] = _validate_bool(
+        raw.get("write_parquet", defaults["write_parquet"]),
+        fallback=defaults["write_parquet"],
+        name="write_parquet",
+    )
+    out["parquet_roll_mb"] = _clamp_int(
+        raw.get("parquet_roll_mb", defaults["parquet_roll_mb"]),
+        *PARQUET_ROLL_MB_RANGE,
+        fallback=defaults["parquet_roll_mb"],
+        name="parquet_roll_mb",
+    )
     return out
 
 
@@ -336,23 +356,6 @@ def save_operator_preferences(prefs: Dict[str, Any], path: Optional[Union[Path, 
     merged: Dict[str, Any] = {**existing, **prefs}
     sanitized = validate_and_clamp(merged)
 
-    parent = p.parent
-    parent.mkdir(parents=True, exist_ok=True)
-
-    tmp_path = p.with_name(p.name + _TMP_SUFFIX)
-    payload = json.dumps(sanitized, indent=2, sort_keys=True) + "\n"
-
-    # Write + fsync the tmp file before replacing so the rename target's
-    # contents are guaranteed durable (modulo FS quirks). os.replace is
-    # atomic on POSIX within a single filesystem.
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        fh.write(payload)
-        fh.flush()
-        try:
-            os.fsync(fh.fileno())
-        except OSError:
-            # Some filesystems (tmpfs in containers) don't support fsync;
-            # the replace below is still atomic on POSIX.
-            pass
-    os.replace(tmp_path, p)
+    # tmp → fsync → os.replace, shared with the parquet sink and acq.py.
+    atomic_write_json(p, sanitized, indent=2, sort_keys=True)
     logger.info("Preferences saved to %s", p)

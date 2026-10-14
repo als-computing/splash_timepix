@@ -14,12 +14,14 @@ import sys
 import threading
 import time
 import uuid
+from typing import Optional
 
 import numpy as np
 import psutil
 import typer
 
 from splash_timepix.heartbeat import HeartbeatPublisher, ServerState
+from splash_timepix.parquet_sink import ParquetSink, check_writable
 from splash_timepix.schemas import TimePixStart, TimePixStop
 from splash_timepix.simulator import SimulatorConfig
 from splash_timepix.socket_server import RingBufferHandler, SocketDataServer
@@ -74,6 +76,14 @@ def main(
     heartbeat_port: int = 5658,
     alignment: bool = False,
     alignment_rate_hz: float = 30.0,
+    parquet_dir: Optional[str] = None,
+    parquet_roll_mb: float = 512.0,
+    parquet_row_group_rows: int = 1_000_000,
+    parquet_queue_max_rows: int = 20_000_000,
+    parquet_on_full: str = "drop",
+    parquet_source: str = "live",
+    parquet_source_path: Optional[str] = None,
+    parquet_meta_json: Optional[str] = None,
 ):
     """
     Time-resolved TimePix3 data streaming server.
@@ -100,6 +110,20 @@ def main(
             histograms emitted at ``alignment_rate_hz``. Reuses the rest of the
             pipeline (parse callback, xyt_lock, xyt_queue, zmq_worker) unchanged.
         alignment_rate_hz: Wall-clock flush rate for alignment mode (1–30 Hz, default 30).
+        parquet_dir: Write every scan's raw events/TDC/control packets to parquet files under
+            ``<parquet_dir>/<scan_uuid>/`` while streaming (see info/outputs/parquet/format.md).
+            Omit to disable the parquet output entirely.
+        parquet_roll_mb: Start a new parquet file once the current one reaches this size.
+        parquet_row_group_rows: Target rows per parquet row group.
+        parquet_queue_max_rows: Rows the writer may fall behind by before ``parquet_on_full``
+            applies (memory ≈ 14 bytes per row).
+        parquet_on_full: "drop" (default, never slows the live view; scan marked incomplete) or
+            "block" (never loses rows; may slow the ZMQ path) when the writer falls behind.
+        parquet_source: Provenance recorded in the files: "live", "replay" or "simulator".
+        parquet_source_path: The replayed ``.tpx3`` path (replay mode), recorded in the files.
+        parquet_meta_json: JSON file whose ``user`` and ``detector`` objects are embedded in
+            every parquet footer; read lazily at the first row-group write so ``acq.py`` may
+            still be filling in the ``detector`` snapshot when this process starts.
     """
     _clear_screen_safely()
     print("Starting TimPix3 Streaming Application")
@@ -181,6 +205,34 @@ def main(
     # Create message queue for start/stop control messages (only used with ZMQ worker)
     message_queue = queue.Queue(maxsize=10) if not plot else None
 
+    # Parquet sink (optional). Refuse to start with an unwritable directory: finding
+    # out at the first scan would silently lose that scan's parquet output.
+    sink: Optional[ParquetSink] = None
+    if parquet_dir:
+        if parquet_on_full not in ("drop", "block"):
+            print(f"ERROR: --parquet-on-full must be 'drop' or 'block', got {parquet_on_full!r}")
+            heartbeat.stop()
+            raise typer.Exit(code=2)
+        if parquet_source not in ("live", "replay", "simulator"):
+            print(f"ERROR: --parquet-source must be live, replay or simulator, got {parquet_source!r}")
+            heartbeat.stop()
+            raise typer.Exit(code=2)
+        try:
+            parquet_root = check_writable(parquet_dir)
+        except OSError as e:
+            print(f"ERROR: --parquet-dir {parquet_dir} is not writable: {e}")
+            heartbeat.stop()
+            raise typer.Exit(code=2)
+        sink = ParquetSink(
+            parquet_root,
+            roll_bytes=max(1, int(float(parquet_roll_mb) * 2**20)),
+            row_group_rows=int(parquet_row_group_rows),
+            queue_max_rows=int(parquet_queue_max_rows),
+            on_full=parquet_on_full,
+            meta_json_path=parquet_meta_json,
+        )
+        print(f"Parquet output: {parquet_root} (roll {parquet_roll_mb:g} MB, on full: {parquet_on_full})")
+
     def _queue_stats_for_heartbeat():
         """Snapshot for heartbeat (called from heartbeat thread; keep fast)."""
         stats = {
@@ -192,6 +244,8 @@ def main(
         if message_queue is not None:
             stats["q_ctrl_sz"] = message_queue.qsize()
             stats["q_ctrl_max"] = message_queue.maxsize
+        if sink is not None:
+            stats.update(sink.stats())
         return stats
 
     heartbeat.set_queue_stats_provider(_queue_stats_for_heartbeat)
@@ -317,10 +371,12 @@ def main(
     # Alignment-mode running counter for the wire-level pixel total in start/stop
     # messages. Reset on every client connect alongside the TDC-mode counters.
     pixel_count_total = 0
-    # Scan lifecycle.  stop_message_sent pairs with start_message_sent so the
-    # stop for a scan is published exactly once, whichever path gets there
-    # first (client disconnect on the listener thread, or shutdown on the main
-    # thread).  lifecycle_lock serialises those two paths.
+    # Scan lifecycle.  scan_open is True between the connect callback and the
+    # completion of _send_stop(), so the stop bookkeeping (drain, final flush,
+    # parquet close, TimePixStop) runs exactly once per scan, whichever path
+    # gets there first (client disconnect on the listener thread, or shutdown
+    # on the main thread).  lifecycle_lock serialises those two paths.
+    scan_open = False
     stop_message_sent = False
     lifecycle_lock = threading.Lock()
 
@@ -347,6 +403,10 @@ def main(
         """
         nonlocal last_tdc_warning_time, first_pixel_time
         nonlocal start_message_sent, acquisition_start_time
+
+        # Parquet first: a non-blocking enqueue of the raw batch, before any binning.
+        if sink is not None:
+            sink.offer(result)
 
         current_time = time.time()
 
@@ -702,6 +762,10 @@ def main(
         nonlocal first_pixel_time, start_message_sent, acquisition_start_time
         nonlocal pixel_count_total, last_flush_time
 
+        # Alignment ignores TDCs in its binning; the parquet record does not.
+        if sink is not None:
+            sink.offer(result)
+
         current_time = time.time()
 
         # Mirror the start-message logic from data_callback so the first data
@@ -866,13 +930,14 @@ def main(
         Every counter declared under "Per-acquisition state variables" is reset
         here for the new client.
         """
-        nonlocal stop_message_sent, start_message_sent, acquisition_start_time, scan_name
+        nonlocal scan_open, stop_message_sent, start_message_sent, acquisition_start_time, scan_name
         nonlocal cycle_count, flush_count, event_count, pixel_count_total
         nonlocal pixels_before_trigger, pixels_outside_window, t_zero, first_pixel_time
         nonlocal last_flush_time, cycles_since_last_flush
 
         with lifecycle_lock:
             heartbeat.set_state(ServerState.STREAMING)
+            scan_open = True
             stop_message_sent = False
             start_message_sent = False
             acquisition_start_time = None
@@ -895,6 +960,28 @@ def main(
                 local_accumulator.fill(0)
             logger.info(f"New client connected - resetting acquisition state. New scan: {scan_name}")
             print(f"New client connected - resetting acquisition state. New scan: {scan_name}")
+
+            # Open the parquet scan directory before the first byte is read.
+            if sink is not None:
+                try:
+                    sink.start(
+                        scan_name,
+                        {
+                            "mode": "alignment" if alignment else "timing",
+                            "tdc_frequency_hz": tdc_frequency,
+                            "tdc_channel": tdc_ch,
+                            "tdc_edge": tdc_edge,
+                            "t_delta_ns": t_delta_ns,
+                            "t_cycle_ns": t_cycle / 1e3,
+                            "n_bins": n_bins,
+                            "collapse_y": collapse_y,
+                            "detector_size_x": detector_size_x,
+                            "detector_size_y": detector_size_y,
+                            "source": {"kind": parquet_source, "path": parquet_source_path},
+                        },
+                    )
+                except Exception:
+                    logger.exception("ParquetSink.start failed; this scan will have no parquet output")
 
             # Queue the start message before any data so ZMQ subscribers receive it
             # first — even when count rates are zero and data_callback never fires
@@ -935,10 +1022,10 @@ def main(
         the main thread (shutdown): the second call is a no-op.  Nothing is sent
         when no start was sent, which prevents an orphan stop with no scan.
         """
-        nonlocal stop_message_sent
+        nonlocal scan_open, stop_message_sent
 
         with lifecycle_lock:
-            if message_queue is None or not start_message_sent or stop_message_sent:
+            if not scan_open:
                 return
             # Drain any TDC/pixel batches still sitting in
             # SocketDataServer.message_queue before snapshotting
@@ -961,6 +1048,34 @@ def main(
                 pixels_discarded_before_trigger=int(pixels_before_trigger),
                 pixels_discarded_outside_window=int(pixels_outside_window),
             )
+
+            # Close the parquet scan *after* wait_for_idle (every batch has been
+            # offered) and *before* the stop is published, so the stop message can
+            # say exactly which directory holds the run and whether it is complete.
+            # Unconditional: not under the start_message_sent guard.
+            if sink is not None:
+                try:
+                    summary = sink.stop(stop_msg.model_dump(), timeout=60.0)
+                except Exception:
+                    logger.exception("ParquetSink.stop failed")
+                    summary = None
+                if summary is not None:
+                    stop_msg.parquet_dir = summary["scan_dir"]
+                    stop_msg.parquet_status = summary["status"]
+                    stop_msg.parquet_rows = summary["rows"]
+                    stop_msg.parquet_dropped_rows = summary["dropped_rows"]
+                    if summary["status"] != "complete":
+                        logger.warning(
+                            "Parquet output for scan %s is %s (%d rows dropped)%s",
+                            scan_name,
+                            summary["status"],
+                            summary["dropped_rows"],
+                            f": {summary['error']}" if summary.get("error") else "",
+                        )
+
+            scan_open = False
+            if message_queue is None or not start_message_sent or stop_message_sent:
+                return
             try:
                 message_queue.put_nowait(stop_msg.model_dump())
                 stop_message_sent = True
@@ -1176,6 +1291,13 @@ def main(
         # Close the scan if the disconnect callback has not already done so
         # (no-op otherwise; nothing is sent when no start was sent).
         _send_stop("shutdown")
+
+        # Parquet worker threads are no longer needed once the scan is closed.
+        if sink is not None:
+            try:
+                sink.shutdown()
+            except Exception:
+                logger.exception("ParquetSink.shutdown failed")
 
         # Signal all threads to stop
         stop_event.set()

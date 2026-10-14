@@ -122,6 +122,10 @@ class ServalClient:
         resp = self._request("get", "/detector/calibrate_toa")
         logging.info(f"TOA calibration finished: {resp.text.strip()}")
 
+    def get_detector_chips(self) -> List[Dict[str, Any]]:
+        """Retrieve the raw ``/detector/chips`` document (one dict per chip)."""
+        return self._request("get", "/detector/chips").json()
+
     def get_chip_adjustments(self) -> List[List[int]]:
         """
         Retrieve the 'Adjust' list for each detector chip.
@@ -129,8 +133,7 @@ class ServalClient:
         Returns:
             A list of adjustment-value lists, one per chip.
         """
-        resp = self._request("get", "/detector/chips")
-        chips = resp.json()
+        chips = self.get_detector_chips()
         return [chip.get("Adjust", []) for chip in chips]
 
     def wait_for_measurement_to_finish(self, poll_interval: float = 0.5) -> None:

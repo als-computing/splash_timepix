@@ -220,6 +220,12 @@ def streaming_rig():
         tdc_channel: int = 0,
         tdc_edge: str = "rising",
         ready_timeout: float = 10.0,
+        parquet_dir: Optional[Path] = None,
+        parquet_roll_mb: Optional[float] = None,
+        parquet_on_full: Optional[str] = None,
+        parquet_queue_max_rows: Optional[int] = None,
+        parquet_meta_json: Optional[Path] = None,
+        extra_args: Optional[List[str]] = None,
     ) -> StreamingRig:
         tcp_port = get_free_port()
         zmq_port = get_free_port()
@@ -250,6 +256,18 @@ def streaming_rig():
             cmd.append("--collapse-y")
         if exit_on_disconnect:
             cmd.append("--exit-on-disconnect")
+        if parquet_dir is not None:
+            cmd += ["--parquet-dir", str(parquet_dir), "--parquet-source", "simulator"]
+        if parquet_roll_mb is not None:
+            cmd += ["--parquet-roll-mb", str(parquet_roll_mb)]
+        if parquet_on_full is not None:
+            cmd += ["--parquet-on-full", parquet_on_full]
+        if parquet_queue_max_rows is not None:
+            cmd += ["--parquet-queue-max-rows", str(parquet_queue_max_rows)]
+        if parquet_meta_json is not None:
+            cmd += ["--parquet-meta-json", str(parquet_meta_json)]
+        if extra_args:
+            cmd += list(extra_args)
 
         # Server stdout/stderr → DEVNULL.  PIPE would deadlock the server
         # once its OS buffer fills (nothing in the test process drains it)

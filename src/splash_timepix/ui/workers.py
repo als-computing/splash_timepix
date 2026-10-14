@@ -65,12 +65,23 @@ class HeartbeatStatus:
     q_ingest: Optional[Tuple[int, int]] = None
     q_xyt: Optional[Tuple[int, int]] = None
     q_zmq_control: Optional[Tuple[int, int]] = None
+    # Parquet sink (None when the server runs without --parquet-dir)
+    parquet_status: Optional[str] = None  # idle | writing | complete | incomplete | error
+    parquet_rows: Optional[int] = None
+    parquet_files: Optional[int] = None
+    parquet_dropped: Optional[int] = None
+    parquet_queue: Optional[Tuple[int, int]] = None
+    parquet_free_gb: Optional[float] = None
 
 
 def _heartbeat_queue_pair(msg: Dict[str, Any], sz_key: str, mx_key: str) -> Optional[Tuple[int, int]]:
     if sz_key in msg and mx_key in msg:
         return (int(msg[sz_key]), int(msg[mx_key]))
     return None
+
+
+def _heartbeat_int(msg: Dict[str, Any], key: str) -> Optional[int]:
+    return int(msg[key]) if key in msg else None
 
 
 # =============================================================================
@@ -82,6 +93,7 @@ class ZmqSubscriberWorker(QThread):
     """Background thread that subscribes to ZMQ data stream from app.py."""
 
     flush_received = Signal(object)  # FlushData
+    control_received = Signal(dict)  # TimePixStart / TimePixStop as published (msg_type inside)
     connection_changed = Signal(bool)
     error_occurred = Signal(str)
 
@@ -122,6 +134,7 @@ class ZmqSubscriberWorker(QThread):
                             msg_type,
                             metadata.get("scan_name", "?"),
                         )
+                        self.control_received.emit(dict(metadata))
                         continue
 
                     # Data message: receive second part (array bytes)
@@ -215,6 +228,12 @@ class HeartbeatMonitorWorker(QThread):
                         q_ingest=_heartbeat_queue_pair(msg, "q_ingest_sz", "q_ingest_max"),
                         q_xyt=_heartbeat_queue_pair(msg, "q_xyt_sz", "q_xyt_max"),
                         q_zmq_control=_heartbeat_queue_pair(msg, "q_ctrl_sz", "q_ctrl_max"),
+                        parquet_status=msg.get("parquet_status"),
+                        parquet_rows=_heartbeat_int(msg, "parquet_rows"),
+                        parquet_files=_heartbeat_int(msg, "parquet_files"),
+                        parquet_dropped=_heartbeat_int(msg, "parquet_dropped"),
+                        parquet_queue=_heartbeat_queue_pair(msg, "parquet_q_rows", "parquet_q_max"),
+                        parquet_free_gb=(float(msg["parquet_free_gb"]) if "parquet_free_gb" in msg else None),
                     )
                     self.status_updated.emit(status)
 
@@ -345,7 +364,13 @@ class ProcessManager(QObject):
         exit_on_disconnect: bool = True,
         alignment: bool = False,
         alignment_rate_hz: float = 30.0,
+        parquet_dir: Optional[str] = None,
+        parquet_roll_mb: Optional[float] = None,
+        parquet_source: Optional[str] = None,
+        parquet_source_path: Optional[str] = None,
+        parquet_meta_json: Optional[str] = None,
     ) -> bool:
+        """Launch ``tpx-stream``. ``parquet_dir`` enables the parquet output (see app.py flags)."""
         args = [
             "-m",
             "splash_timepix.app",
@@ -369,6 +394,16 @@ class ProcessManager(QObject):
             args.append("--collapse-y")
         if exit_on_disconnect:
             args.append("--exit-on-disconnect")
+        if parquet_dir:
+            args += ["--parquet-dir", str(parquet_dir)]
+            if parquet_roll_mb is not None:
+                args += ["--parquet-roll-mb", str(parquet_roll_mb)]
+            if parquet_source:
+                args += ["--parquet-source", parquet_source]
+            if parquet_source_path:
+                args += ["--parquet-source-path", str(parquet_source_path)]
+            if parquet_meta_json:
+                args += ["--parquet-meta-json", str(parquet_meta_json)]
 
         return self._start_process(
             name="streaming",
@@ -427,8 +462,10 @@ class ProcessManager(QObject):
             working_dir=live_cli.parent,
         )
 
-    def start_acquisition(self, duration: int, output_dir: str, preview: bool = False) -> bool:
-
+    def start_acquisition(
+        self, duration: int, output_dir: str, preview: bool = False, meta_json: Optional[str] = None
+    ) -> bool:
+        """Launch ``acq.py``. ``meta_json`` makes it write the Serval detector snapshot into that file."""
         args = [
             "-m",
             "splash_timepix.serval_client.acq",
@@ -439,6 +476,8 @@ class ProcessManager(QObject):
             args.append("--preview")
         else:
             args.extend(["-output", output_dir])
+        if meta_json:
+            args.extend(["--meta-json", str(meta_json)])
 
         return self._start_process(
             name="acquisition",

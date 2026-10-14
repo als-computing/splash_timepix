@@ -10,6 +10,7 @@ from typing import Optional, Tuple, Union
 import numpy as np
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -26,11 +27,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from splash_timepix.atomic_io import merge_json_file
+
 from . import preferences, theme
 from .widgets import CURSOR_COLORS, HeatmapWidget, SpectrumPlotWidget, StatusIndicator, VerticalLabel, get_colormap
 from .workers import FlushData, HeartbeatStatus, ServalStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _parquet_info(stop_message: dict) -> dict:
+    """The parquet fields of a TimePixStop, for _meta.json."""
+    return {
+        "dir": stop_message.get("parquet_dir"),
+        "status": stop_message.get("parquet_status"),
+        "rows": stop_message.get("parquet_rows"),
+        "dropped_rows": stop_message.get("parquet_dropped_rows"),
+    }
 
 
 def _queue_metric_style(*, alert: bool) -> str:
@@ -73,6 +86,11 @@ class OperatorTab(QWidget):
         super().__init__(parent)
 
         self._last_metadata: Optional[dict] = None
+        # Last ZMQ stop message (carries parquet_dir / parquet_status) and the
+        # _meta.json most recently written, so whichever arrives second can
+        # complete the other (see on_control_received / save_average_data).
+        self._last_stop: Optional[dict] = None
+        self._last_meta_json: Optional[Tuple[str, Path]] = None
         self._last_serval_status: Optional[ServalStatus] = None
         self._serval_process_running = False
         self._serval_hw_ready = False  # True after "Chip temps:" appears in Serval log
@@ -414,6 +432,39 @@ class OperatorTab(QWidget):
         settings_layout.addLayout(out_row)
         self._sync_output_path_tooltip()
 
+        # Parquet output toggle (Start and Replay modes). On by default.
+        parquet_row = QHBoxLayout()
+        self._write_parquet_check = QCheckBox("Write parquet")
+        self._write_parquet_check.setChecked(True)
+        self._write_parquet_check.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        self._write_parquet_check.setToolTip(
+            "Also write every event, TDC edge and control packet of the scan to parquet files under "
+            "<output>/<scan uuid>/ while acquiring (Start and Replay modes). The .tpx3 is written regardless. "
+            "See info/outputs/parquet/format.md."
+        )
+        parquet_row.addWidget(self._write_parquet_check)
+        parquet_row.addStretch()
+        settings_layout.addLayout(parquet_row)
+
+        # Operator metadata, embedded in every parquet footer (and searchable in Tiled).
+        self._meta_inputs: dict[str, QLineEdit] = {}
+        for key, title, placeholder in (
+            ("sample", "Sample", "e.g. Cu foil 10 µm"),
+            ("proposal", "Proposal", "e.g. ALS-12345"),
+            ("notes", "Notes", "free text"),
+        ):
+            row = QHBoxLayout()
+            label = QLabel(title)
+            label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+            label.setToolTip(f"Recorded as user.{key} in the parquet metadata of every scan.")
+            row.addWidget(label)
+            edit = QLineEdit()
+            edit.setPlaceholderText(placeholder)
+            edit.setStyleSheet(theme.input_style())
+            row.addWidget(edit)
+            settings_layout.addLayout(row)
+            self._meta_inputs[key] = edit
+
         left_layout.addWidget(settings_group)
 
         # Pipeline queue depths (from streaming server heartbeat)
@@ -439,6 +490,12 @@ class OperatorTab(QWidget):
                 "ZMQ PUB (SUB)",
                 "3D flush queue (PUB path) and control queue depth in parentheses; "
                 "denominator is flush-queue capacity.",
+            ),
+            (
+                "parquet",
+                "Parquet",
+                "Parquet sink: status, event rows written, files closed, rows dropped. "
+                "'off' when the streaming server runs without --parquet-dir.",
             ),
         ]
         for key, title, tip in queue_rows:
@@ -769,6 +826,8 @@ class OperatorTab(QWidget):
             "n_bins": int(self._n_bins_input.value()),
             "duration": self._duration_input.value(),
             "output_dir": self._output_input.text(),
+            "write_parquet": self._write_parquet_check.isChecked(),
+            "user_metadata": {k: w.text().strip() for k, w in self._meta_inputs.items() if w.text().strip()},
         }
 
     def _build_preferences(self) -> dict:
@@ -786,6 +845,7 @@ class OperatorTab(QWidget):
             "n_bins": int(self._n_bins_input.value()),
             "duration": int(self._duration_input.value()),
             "output_dir": self._output_input.text(),
+            "write_parquet": self._write_parquet_check.isChecked(),
         }
 
     def load_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
@@ -804,6 +864,7 @@ class OperatorTab(QWidget):
         self._n_bins_input.setValue(int(prefs["n_bins"]))
         self._duration_input.setValue(int(prefs["duration"]))
         self._output_input.setText(str(prefs["output_dir"]))
+        self._write_parquet_check.setChecked(bool(prefs["write_parquet"]))
         self._sync_output_path_tooltip()
 
     def save_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
@@ -1181,10 +1242,48 @@ class OperatorTab(QWidget):
                     self._stream_status.set_status_detail(state_label)
             self._apply_queue_depth_label(self._queue_labels["packet_buffer"], status.q_ingest)
             self._apply_zmq_pub_sub_label(self._queue_labels["zmq_pub"], status.q_xyt, status.q_zmq_control)
+            self._apply_parquet_label(self._queue_labels["parquet"], status)
         else:
             self._stream_status.set_connected(False, "")
             self._apply_queue_depth_label(self._queue_labels["packet_buffer"], None)
             self._apply_zmq_pub_sub_label(self._queue_labels["zmq_pub"], None, None)
+            self._apply_parquet_label(self._queue_labels["parquet"], None)
+
+    def _apply_parquet_label(self, label: QLabel, status: Optional[HeartbeatStatus]) -> None:
+        if status is None:
+            label.setText("--")
+            label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+            return
+        if status.parquet_status is None:
+            label.setText("off")
+            label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+            return
+        rows = status.parquet_rows or 0
+        rows_str = f"{rows/1e6:.1f}M" if rows >= 1e6 else f"{rows/1e3:.0f}k" if rows >= 1e3 else str(rows)
+        text = f"{status.parquet_status} · {rows_str} rows · {status.parquet_files or 0} files"
+        color = theme.TEXT_PRIMARY
+        if status.parquet_dropped:
+            text += f" · {status.parquet_dropped} dropped"
+            color = theme.STATUS_WARNING
+        if status.parquet_status == "error":
+            color = theme.STATUS_ERROR
+        if status.parquet_free_gb is not None and status.parquet_free_gb < 20:
+            text += f" · {status.parquet_free_gb:.0f} GB free"
+        label.setText(text)
+        label.setStyleSheet(f"color: {color};")
+
+    @Slot(dict)
+    def on_control_received(self, message: dict) -> None:
+        """Remember the ZMQ stop message; complete an already-written _meta.json with its parquet info."""
+        if message.get("msg_type") != "stop":
+            return
+        self._last_stop = message
+        if self._last_meta_json and self._last_meta_json[0] == message.get("scan_name"):
+            try:
+                merge_json_file(self._last_meta_json[1], {"parquet": _parquet_info(message), "stop_message": message})
+                logger.info("Updated %s with parquet info from the stop message", self._last_meta_json[1])
+            except OSError as e:
+                logger.warning("Could not update %s with parquet info: %s", self._last_meta_json[1], e)
 
     @Slot(bool)
     def on_zmq_connection_changed(self, connected: bool):
@@ -1305,9 +1404,15 @@ class OperatorTab(QWidget):
 
             if self._last_metadata:
                 meta["zmq_metadata"] = self._last_metadata
+            # Parquet directory/status from the stop message, when it has already arrived
+            # for this scan; otherwise on_control_received() adds it when the stop comes in.
+            if self._last_stop and self._last_stop.get("scan_name") == scan_uuid:
+                meta["parquet"] = _parquet_info(self._last_stop)
+                meta["stop_message"] = self._last_stop
 
             with open(json_path, "w") as f:
                 json.dump(meta, f, indent=2)
+            self._last_meta_json = (scan_uuid, json_path)
             logger.info("Saved JSON: %s (scan: %s)", json_path, scan_uuid)
         except Exception as e:
             logger.error(f"Failed to save JSON: {e}")

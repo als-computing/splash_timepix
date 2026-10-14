@@ -43,6 +43,8 @@ def _full_prefs_payload() -> dict:
         "alignment_show_crosshair": False,
         "alignment_simulator": False,
         "scan_counter": 1,
+        "write_parquet": False,
+        "parquet_roll_mb": 256,
     }
 
 
@@ -51,6 +53,27 @@ def test_default_preferences_self_consistent():
     defaults = preferences.default_preferences()
     sanitized = preferences.validate_and_clamp(defaults)
     assert sanitized == defaults
+
+
+def test_parquet_keys_default_on_and_round_trip(tmp_path: Path):
+    """Parquet is on by default; both keys survive save → load and clamp like the others."""
+    defaults = preferences.default_preferences()
+    assert defaults["write_parquet"] is True
+    assert defaults["parquet_roll_mb"] == 512
+
+    path = tmp_path / "operator_prefs.json"
+    preferences.save_operator_preferences({"write_parquet": False, "parquet_roll_mb": 128}, path)
+    loaded = preferences.load_operator_preferences(path)
+    assert loaded["write_parquet"] is False and loaded["parquet_roll_mb"] == 128
+
+    lo, hi = preferences.PARQUET_ROLL_MB_RANGE
+    assert preferences.validate_and_clamp({"parquet_roll_mb": 1})["parquet_roll_mb"] == lo
+    assert preferences.validate_and_clamp({"parquet_roll_mb": 10**6})["parquet_roll_mb"] == hi
+    assert preferences.validate_and_clamp({"write_parquet": "yes"})["write_parquet"] is True  # fallback
+    # A v2 file without the keys loads with the defaults.
+    path.write_text(json.dumps({"preferences_version": 2, "tdc_frequency": 10.0}))
+    loaded = preferences.load_operator_preferences(path)
+    assert loaded["write_parquet"] is True and loaded["parquet_roll_mb"] == 512
 
 
 def test_round_trip_full_payload(tmp_path: Path):

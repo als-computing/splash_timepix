@@ -6,6 +6,7 @@ Coordinates all components: tabs, workers, and process management.
 import logging
 import signal
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,7 @@ from PySide6.QtCore import QTimer, Slot, qVersion
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar, QTabWidget, QVBoxLayout, QWidget
 
+from splash_timepix.atomic_io import atomic_write_json
 from splash_timepix.serval_client import ServalClient
 
 from . import single_instance, theme
@@ -52,6 +54,11 @@ class MainWindow(QMainWindow):
         self._acquiring = False
         self._preview_mode = False
         self._current_output_dir: Optional[str] = None
+        # Parquet output of the current run: the directory passed as --parquet-dir and the
+        # metadata JSON (operator fields + detector snapshot) passed as --parquet-meta-json.
+        self._current_parquet_dir: Optional[str] = None
+        self._current_meta_json: Optional[Path] = None
+        self._last_stop_message: Optional[dict] = None
 
         # Workers
         self._process_manager: Optional[ProcessManager] = None
@@ -152,6 +159,8 @@ class MainWindow(QMainWindow):
         # ZMQ subscriber (always runs, receives data when available)
         self._zmq_worker = ZmqSubscriberWorker()
         self._zmq_worker.flush_received.connect(self._on_flush_received)
+        self._zmq_worker.control_received.connect(self._operator_tab.on_control_received)
+        self._zmq_worker.control_received.connect(self._on_zmq_control)
         self._zmq_worker.connection_changed.connect(self._operator_tab.on_zmq_connection_changed)
         self._zmq_worker.connection_changed.connect(self._on_zmq_connection_changed)
         self._zmq_worker.error_occurred.connect(self._on_zmq_error)
@@ -245,6 +254,11 @@ class MainWindow(QMainWindow):
             f"Starting {mode}: TDC={tdc_freq}Hz, parse_batch={callback_batch_size}, duration={duration}s",
         )
 
+        # Parquet output: Start and Replay only (preview, simulator and alignment are
+        # throwaway). The parquet root is the output directory (Start) or the folder of
+        # the replayed file (Replay), the same place _save_on_stop puts the averages.
+        parquet_kwargs = self._prepare_parquet_run(mode, params)
+
         # Start streaming server (needed for all modes; alignment passes extra flags).
         if not self._process_manager.start_streaming_server(
             tdc_freq,
@@ -255,8 +269,10 @@ class MainWindow(QMainWindow):
             exit_on_disconnect=True,
             alignment=(mode == "alignment"),
             alignment_rate_hz=alignment_rate_hz,
+            **parquet_kwargs,
         ):
             QMessageBox.warning(self, "Error", "Failed to start streaming server")
+            self._cleanup_meta_json()
             return
 
         self._status_bar.showMessage("Starting streaming server...")
@@ -357,6 +373,62 @@ class MainWindow(QMainWindow):
                 lambda: self._start_live_cli_and_acq(params["duration"], params["output_dir"], mode == "preview"),
             )
 
+    def _prepare_parquet_run(self, mode: str, params: dict) -> dict:
+        """Decide the parquet arguments for this run and write the operator metadata file.
+
+        Returns the keyword arguments for ``ProcessManager.start_streaming_server``
+        (empty when parquet is off for this mode). Side effects: sets
+        ``_current_parquet_dir`` / ``_current_meta_json``.
+        """
+        self._current_parquet_dir = None
+        self._current_meta_json = None
+        self._last_stop_message = None
+        if mode not in ("start", "replay") or not params.get("write_parquet", True):
+            return {}
+
+        if mode == "replay" and self._current_replay_file:
+            parquet_dir = str(Path(self._current_replay_file).parent)
+            source = {"parquet_source": "replay", "parquet_source_path": self._current_replay_file}
+        else:
+            parquet_dir = params.get("output_dir") or str(Path.home() / "Desktop")
+            source = {"parquet_source": "live"}
+
+        prefs = load_operator_preferences()
+        kwargs = {
+            "parquet_dir": parquet_dir,
+            "parquet_roll_mb": float(prefs.get("parquet_roll_mb", 512)),
+            **source,
+        }
+
+        # Operator-entered metadata → `user` block. acq.py adds `detector` later (Start mode);
+        # tpx-stream embeds the file's content in every parquet footer.
+        user = dict(params.get("user_metadata") or {})
+        meta_json = Path(parquet_dir) / f".tpx3_meta_{uuid.uuid4().hex[:8]}.json"
+        try:
+            atomic_write_json(meta_json, {"user": user})
+            kwargs["parquet_meta_json"] = str(meta_json)
+            self._current_meta_json = meta_json
+        except OSError as e:
+            logger.warning("Could not write parquet metadata file %s: %s", meta_json, e)
+            self._log_manager.append("system", f"WARNING: parquet metadata file not written: {e}")
+
+        self._current_parquet_dir = parquet_dir
+        self._log_manager.append("system", f"Parquet output: {parquet_dir} (roll {kwargs['parquet_roll_mb']:g} MB)")
+        return kwargs
+
+    def _cleanup_meta_json(self) -> None:
+        """Remove the per-run metadata file; its content lives on in the parquet footers."""
+        p = self._current_meta_json
+        self._current_meta_json = None
+        if p is None:
+            return
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning("Could not remove %s: %s", p, e)
+
     def _start_live_cli_and_acq(self, duration: int, output_dir: str, preview: bool):
         """Start live-cli and acquisition after server is ready."""
         # Start live-cli (no replay file = real detector)
@@ -373,7 +445,8 @@ class MainWindow(QMainWindow):
         self._log_manager.append("system", "Starting acquisition...")
         self._status_bar.showMessage("Acquiring..." if not preview else "Preview mode...")
 
-        if not self._process_manager.start_acquisition(duration, output_dir, preview):
+        meta_json = str(self._current_meta_json) if self._current_meta_json else None
+        if not self._process_manager.start_acquisition(duration, output_dir, preview, meta_json=meta_json):
             QMessageBox.warning(self, "Error", "Failed to start acquisition")
             self._process_manager.stop_all()
             return
@@ -408,8 +481,10 @@ class MainWindow(QMainWindow):
             self._log_manager.append("system", f"Stopping {proc_name}...")
             self._process_manager.stop_process(proc_name)
             self._status_bar.showMessage("Waiting for streaming server to finish...")
-            # Safety net: force-kill streaming after 6 s if it has not exited.
-            QTimer.singleShot(6000, self._force_stop_streaming_if_still_running)
+            # Safety net: force-kill streaming if it has not exited. With parquet on the
+            # server still has to close (fsync) its last files, so allow it longer.
+            grace_ms = 30000 if self._current_parquet_dir else 6000
+            QTimer.singleShot(grace_ms, self._force_stop_streaming_if_still_running)
         else:
             # For real acquisition, call stop.py via Serval
             self._run_stop_script()
@@ -549,6 +624,10 @@ class MainWindow(QMainWindow):
 
         mode = getattr(self, "_current_mode", "start")
 
+        if name == "streaming":
+            # The sink has closed its files by now; the metadata file has done its job.
+            self._cleanup_meta_json()
+
         # Check if a relevant process stopped while acquiring
         if self._acquiring:
             if name == "acquisition":
@@ -679,6 +758,35 @@ class MainWindow(QMainWindow):
     def _on_zmq_error(self, error: str):
         """Handle ZMQ error."""
         self._log_manager.append("zmq-backend", f"Error: {error}")
+
+    @Slot(dict)
+    def _on_zmq_control(self, message: dict):
+        """Log start/stop messages; warn the operator when the parquet output is not complete."""
+        msg_type = message.get("msg_type")
+        scan = message.get("scan_name", "?")
+        if msg_type == "start":
+            self._log_manager.append("zmq-backend", f"Start: scan {scan}")
+            return
+        if msg_type != "stop":
+            return
+        self._last_stop_message = message
+        parquet_dir = message.get("parquet_dir")
+        status = message.get("parquet_status")
+        if parquet_dir:
+            rows = message.get("parquet_rows")
+            self._log_manager.append(
+                "zmq-backend", f"Stop: scan {scan} — parquet {status}, {rows} rows → {parquet_dir}"
+            )
+            if status != "complete":
+                dropped = message.get("parquet_dropped_rows") or 0
+                self._log_manager.append(
+                    "system",
+                    f"WARNING: parquet output for scan {scan} is {status} ({dropped} rows dropped). "
+                    "The .tpx3 is complete; replay it with parquet enabled to regenerate.",
+                )
+                self._status_bar.showMessage(f"Parquet output {status} for scan {scan[:8]} — see Logs")
+        else:
+            self._log_manager.append("zmq-backend", f"Stop: scan {scan}")
 
     def closeEvent(self, event):
         """Handle window close - cleanup workers and processes."""
