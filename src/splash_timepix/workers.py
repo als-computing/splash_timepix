@@ -362,11 +362,18 @@ def zmq_worker(
         # flush_number comes from app.py flush_metadata — that is the single source of truth.
         last_flush_num: int = 0
 
-        while not stop_event.is_set():
-            # First, check for control messages (start/stop) - higher priority
-            if message_queue is not None:
+        def publish_control_messages() -> int:
+            """Publish every queued start/stop message; return how many were taken."""
+            if message_queue is None:
+                return 0
+            n = 0
+            while True:
                 try:
                     control_message = message_queue.get_nowait()
+                except queue.Empty:
+                    return n
+                n += 1
+                try:
                     # Control messages are single-part (just metadata)
                     message_bytes = msgpack.packb(control_message)
                     try:
@@ -380,14 +387,26 @@ def zmq_worker(
                         msg_type = control_message.get("msg_type", "control")
                         logger.warning(f"ZMQ send would block, dropping {msg_type} message")
                         print(f"WARNING: ZMQ send would block, dropping {msg_type} message")
+                finally:
                     message_queue.task_done()
-                    continue  # Process control message, then continue loop
-                except queue.Empty:
-                    pass  # No control messages, continue to data processing
+
+        while not stop_event.is_set():
+            # First, check for control messages (start/stop) - higher priority
+            if publish_control_messages():
+                continue
 
             try:
                 # Unpack array and per-flush metadata
                 array_data, flush_metadata = xyt_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            try:
+                # A start message queued while we were blocked in get() above must
+                # go out before this event: app.py queues the start on client
+                # connect, strictly before any data for that scan can be flushed,
+                # and subscribers rely on start preceding every event of the scan.
+                publish_control_messages()
 
                 # Build combined metadata
                 metadata = {}
@@ -428,33 +447,18 @@ def zmq_worker(
                         flush_metadata.get("scan_name", "?"),
                     )
 
-                xyt_queue.task_done()
-
-            except queue.Empty:
-                continue
             except Exception as e:
                 logger.error(f"Error in ZMQ worker: {e}", exc_info=True)
+            finally:
+                # Always account for the flush so xyt_queue.unfinished_tasks is
+                # meaningful: app.py waits for it to reach zero before queuing a
+                # stop, which is what keeps the stop *after* the last event.
+                xyt_queue.task_done()
 
         # stop_event can flip true while we are blocked on xyt_queue.get(); then we leave
         # the loop without running the control-message branch. Drain the queue so stop
         # reaches subscribers before the PUB socket closes.
-        if message_queue is not None:
-            while True:
-                try:
-                    control_message = message_queue.get_nowait()
-                    message_bytes = msgpack.packb(control_message)
-                    try:
-                        socket.send(message_bytes, zmq.DONTWAIT)
-                        msg_type = control_message.get("msg_type", "unknown")
-                        logger.info(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")
-                        print(f"Published {msg_type} message: {control_message.get('scan_name', 'N/A')}")
-                    except zmq.Again:
-                        msg_type = control_message.get("msg_type", "control")
-                        logger.warning(f"ZMQ send would block, dropping {msg_type} message")
-                        print(f"WARNING: ZMQ send would block, dropping {msg_type} message")
-                    message_queue.task_done()
-                except queue.Empty:
-                    break
+        publish_control_messages()
 
         logger.info(f"ZMQ worker finished; last flush_number from app.py = {last_flush_num}")
 

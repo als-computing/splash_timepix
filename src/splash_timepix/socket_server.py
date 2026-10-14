@@ -103,6 +103,16 @@ class SocketDataServer:
         # Callback receives BatchParseResult
         self.data_callback: Optional[Callable[[BatchParseResult], None]] = None
 
+        # Lifecycle callbacks, fired synchronously on the listener thread.
+        # on_client_connect runs after a client is accepted and *before* any of
+        # its bytes are read, so per-scan state can be reset before the first
+        # batch reaches data_callback.  on_client_disconnect runs after the
+        # client handler has returned and *before* client_disconnected_event
+        # is set, so whatever it does (e.g. drain the queue and publish a stop
+        # message) is finished when waiters wake up.
+        self.on_client_connect: Optional[Callable[[], None]] = None
+        self.on_client_disconnect: Optional[Callable[[], None]] = None
+
         # Byte accumulator for batching
         self._byte_buffer = bytearray()
         self._byte_buffer_lock = threading.Lock()
@@ -115,6 +125,35 @@ class SocketDataServer:
             callback: Function that takes BatchParseResult as argument
         """
         self.data_callback = callback
+
+    def set_client_callbacks(
+        self,
+        on_connect: Optional[Callable[[], None]] = None,
+        on_disconnect: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """
+        Set callbacks fired when a client connects / disconnects.
+
+        Both run synchronously on the listener thread (see ``__init__``), so a
+        slow ``on_disconnect`` delays accepting the next client — which is the
+        point: the previous scan is fully closed before a new one can start.
+        Exceptions raised by either callback are logged and do not stop the
+        server.
+
+        Args:
+            on_connect: Called after ``accept()``, before the first byte is read.
+            on_disconnect: Called after the client handler returns.
+        """
+        self.on_client_connect = on_connect
+        self.on_client_disconnect = on_disconnect
+
+    def _fire(self, callback: Optional[Callable[[], None]], what: str) -> None:
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.exception(f"Error in {what} callback")
 
     def start(self) -> None:
         """Start the server and processing threads."""
@@ -227,15 +266,22 @@ class SocketDataServer:
             while self.running:
                 try:
                     client_socket, client_address = self.server_socket.accept()
+                    if not self.running:
+                        # stop() connects to our own port purely to unblock
+                        # accept(); that probe must not look like a client.
+                        client_socket.close()
+                        break
                     logger.info(f"Client connected from {client_address}")
 
                     # Set client socket buffer size
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
 
                     self.client_connected = True
+                    self._fire(self.on_client_connect, "on_client_connect")
                     self._handle_client(client_socket)
 
                     self.client_connected = False
+                    self._fire(self.on_client_disconnect, "on_client_disconnect")
                     self.client_disconnected_event.set()
 
                     if self.exit_on_disconnect:
@@ -340,11 +386,17 @@ class SocketDataServer:
         """
         logger.info("Data processor thread started (NumPy accelerated)")
 
-        while self.running or not self.message_queue.empty():
+        # Keep going while the server runs, while the listener thread may still
+        # put the final partial batch of a closing client, and until the queue
+        # is empty — so nothing already received is dropped at shutdown.
+        while self._producer_may_put() or not self.message_queue.empty():
             try:
                 # Short timeout so stop() does not wait ~1s when the queue is idle.
                 batch_bytes = self.message_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
+            try:
                 # Parse entire batch at once with NumPy
                 result = self.parser.parse_batch(batch_bytes)
 
@@ -367,14 +419,22 @@ class SocketDataServer:
                 if self.data_callback:
                     self.data_callback(result)
 
-                self.message_queue.task_done()
-
-            except queue.Empty:
-                continue
             except Exception as e:
                 logger.error(f"Error processing batch: {e}", exc_info=True)
+            finally:
+                # Always account for the batch, even when the callback raised;
+                # otherwise unfinished_tasks never reaches zero and every later
+                # wait_for_idle() blocks for its full timeout.
+                self.message_queue.task_done()
 
         logger.info("Data processor thread finished")
+
+    def _producer_may_put(self) -> bool:
+        """True while the listener thread can still put batches on the queue."""
+        if self.running:
+            return True
+        thread = self.socket_thread
+        return thread is not None and thread is not threading.current_thread() and thread.is_alive()
 
     def get_queue_size(self) -> int:
         """Get current message queue size."""

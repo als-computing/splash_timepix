@@ -14,6 +14,7 @@ feeds it.
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import time
 from typing import List
@@ -41,14 +42,13 @@ def _assert_baseline_run_invariants(
 ) -> str:
     """Parity invariants: start+stop+event presence, start.scan == stop.scan.
 
-    These match what the pre-rig tests asserted.  We intentionally do *not*
-    check event-level scan_name cohesion nor strict monotonic flush_number:
-    a pre-existing race between ``data_callback``'s flush path and the
-    main-loop client-connect block (which polls once per second) can publish
-    flushes with ``scan_name=None`` and/or a pre-reset ``flush_number``
-    before the reset lands.  That bug is parked for a follow-up; see the
-    ``test_final_flush_sent_before_stop`` and ``test_streaming_app_full_…``
-    tests for stricter assertions under race-free configurations.
+    These match what the pre-rig tests asserted and deliberately do *not*
+    check event-level scan_name cohesion or strict monotonic flush_number.
+    (Historically that was because the main loop's 1 s poll could let data
+    through before the per-scan reset; the reset now happens in the server's
+    connect callback before the first byte is read, and
+    ``test_data_sent_immediately_after_connect_belongs_to_the_scan`` pins
+    that down with :func:`_assert_strict_run_invariants`.)
     """
     assert starts, f"{run_label}: no start message received"
     assert len(stops) == 1, f"{run_label}: expected exactly one stop, got {len(stops)}"
@@ -73,11 +73,6 @@ def _assert_strict_run_invariants(
     - scan_name cohesion across start(s), every event, and stop.
     - flush_number is a contiguous 1..N (no gaps, no duplicates).
     - stop.total_flushes == len(events).
-
-    Requires the test to wait long enough after connect for the server's
-    1 s main-loop poll to land the reset *before* any data flows — or to
-    use a ``flush_interval`` large enough that no full flush can fire in
-    the 1 s race window.
     """
     assert starts, f"{run_label}: no start message received"
     assert len(stops) == 1, f"{run_label}: expected exactly one stop, got {len(stops)}"
@@ -339,10 +334,77 @@ def test_final_flush_sent_before_stop(streaming_rig):
         f"All message types: {[m.get('msg_type') for m in messages]}"
     )
 
-    # Strict invariants are safe here: flush_interval=10 s >> the 1 s race
-    # window in the server's main-loop poll, so no full flush can fire
-    # before the client-connect block resets state.
     _assert_strict_run_invariants(starts, stops, events, run_label="final-flush")
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_data_sent_immediately_after_connect_belongs_to_the_scan(streaming_rig):
+    """Phase 0 fix: the scan is created in the server's connect callback, before
+    the first byte is read, so there is no window in which data reaches
+    ``data_callback`` with ``scan_name=None`` or pre-reset counters.
+
+    Unlike ``test_simulator_stop_sends_zmq_stop…`` this test does *not* sleep
+    between ``connect()`` and ``start_auto_sending()``, and uses a short flush
+    interval so several flushes fire inside what used to be the race window.
+    """
+    rig = streaming_rig(
+        tdc_frequency=10000.0,
+        flush_interval=0.2,
+        cps=100000.0,
+        collapse_y=True,
+    )
+    source = rig.make_simulator()
+
+    for run in ("run1", "run2"):
+        assert source.connect(), f"{run}: failed to connect"
+        source.start_auto_sending(2.0)  # no sleep: data flows right after connect
+        if source.send_thread:
+            source.send_thread.join(timeout=6.0)
+        source.stop_auto_sending()
+
+        messages = collect_messages_until_stop(rig.sub_sock, timeout_s=10.0)
+        starts, stops, events = _split(messages)
+        _assert_strict_run_invariants(starts, stops, events, run_label=run)
+        assert events[0]["flush_number"] == 1
+        # The start must precede every event on the wire.
+        first_event_idx = next(i for i, m in enumerate(messages) if m.get("msg_type") not in ("start", "stop"))
+        first_start_idx = next(i for i, m in enumerate(messages) if m.get("msg_type") == "start")
+        assert first_start_idx < first_event_idx, f"{run}: event published before start"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_sigterm_mid_scan_publishes_stop_and_exits_cleanly(streaming_rig):
+    """Phase 0 fix: SIGTERM (what the UI's QProcess.terminate sends) runs the
+    shutdown path instead of killing the process mid-write, so the stop message
+    for the running scan is still published and the exit code is 0.
+    """
+    rig = streaming_rig(
+        tdc_frequency=1000.0,
+        flush_interval=0.5,
+        cps=10000.0,
+        collapse_y=True,
+    )
+    source = rig.make_simulator()
+    assert source.connect(), "failed to connect"
+    source.start_auto_sending(30.0)
+    time.sleep(1.5)  # let a few flushes go out
+
+    rig.server_proc.send_signal(signal.SIGTERM)
+    try:
+        returncode = rig.server_proc.wait(timeout=15.0)
+    finally:
+        source.stop_auto_sending()
+
+    messages = collect_messages_until_stop(rig.sub_sock, timeout_s=5.0)
+    starts, stops, events = _split(messages)
+
+    assert returncode == 0, f"server exited with {returncode}"
+    assert len(stops) == 1, f"expected exactly one stop after SIGTERM, got {len(stops)}"
+    assert starts and stops[0]["scan_name"] == starts[0]["scan_name"]
+    assert stops[0]["total_flushes"] == len(events)
+    assert messages[-1].get("msg_type") == "stop", "stop must be the last message"
 
 
 if __name__ == "__main__":

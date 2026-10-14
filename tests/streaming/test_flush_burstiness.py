@@ -81,9 +81,20 @@ class ComboResult:
 
     @property
     def deltas_s(self) -> List[float]:
-        if len(self.event_arrival_monotonic) < 2:
-            return []
+        """Inter-arrival gaps between *paced* flushes.
+
+        The last event of a run is the end-of-stream final flush, published
+        the moment the client disconnects (``do_final_flush`` in the
+        disconnect callback), not by the wall-clock gate.  Its gap to the
+        previous flush is therefore arbitrary — a few ms when the last bolus
+        was flushed just before the disconnect — and says nothing about
+        pacing, so it is excluded whenever there are enough events to spare it.
+        """
         ts = self.event_arrival_monotonic
+        if len(ts) >= 3:
+            ts = ts[:-1]
+        if len(ts) < 2:
+            return []
         return [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
 
     @property

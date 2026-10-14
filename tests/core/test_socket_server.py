@@ -494,6 +494,168 @@ class TestDebugMode:
             server.stop()
 
 
+class TestLifecycleCallbacks:
+    """Connect/disconnect callbacks and queue accounting (Phase 0 of the parquet plan)."""
+
+    def test_task_done_called_when_callback_raises(self, server, test_port, simulator):
+        """A raising data_callback must not leave unfinished_tasks > 0.
+
+        Before the fix every later ``wait_for_idle()`` blocked for its full
+        timeout because ``task_done()`` was skipped on the exception path.
+        """
+
+        def bad_callback(result):
+            raise ValueError("boom")
+
+        server.set_data_callback(bad_callback)
+        server.callback_batch_size = 1
+        server.batch_byte_size = server.PACKET_SIZE
+        server.start()
+        time.sleep(0.2)
+
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            client.connect(("localhost", test_port))
+            for _ in range(5):
+                client.sendall(simulator.generate_pixel_event())
+            time.sleep(0.5)
+        finally:
+            client.close()
+
+        assert server.wait_for_client_disconnect(timeout=2.0)
+        t0 = time.monotonic()
+        assert server.wait_for_idle(timeout=3.0), "queue never drained: task_done() skipped"
+        assert time.monotonic() - t0 < 1.0, "wait_for_idle blocked until timeout"
+        assert server.message_queue.unfinished_tasks == 0
+
+    def test_connect_and_disconnect_callbacks_bracket_the_data(self, server, test_port, simulator):
+        """on_connect fires before the first batch, on_disconnect after the last.
+
+        Also checks that on_disconnect runs *before* ``client_disconnected_event``
+        is set, so whatever it does is finished when a waiter wakes up.
+        """
+        events = []
+        lock = threading.Lock()
+        event_set_during_disconnect = []
+
+        def on_connect():
+            with lock:
+                events.append("connect")
+
+        def on_data(result):
+            with lock:
+                events.append("data")
+
+        def on_disconnect():
+            event_set_during_disconnect.append(server.client_disconnected_event.is_set())
+            with lock:
+                events.append("disconnect")
+
+        server.set_data_callback(on_data)
+        server.set_client_callbacks(on_connect=on_connect, on_disconnect=on_disconnect)
+        server.callback_batch_size = 1
+        server.batch_byte_size = server.PACKET_SIZE
+        server.start()
+        time.sleep(0.2)
+
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            client.connect(("localhost", test_port))
+            for _ in range(5):
+                client.sendall(simulator.generate_pixel_event())
+            time.sleep(0.4)
+        finally:
+            client.close()
+
+        assert server.wait_for_client_disconnect(timeout=2.0)
+        assert server.wait_for_idle(timeout=2.0)
+        time.sleep(0.1)
+
+        with lock:
+            seq = list(events)
+        assert seq[0] == "connect", seq
+        assert seq[-1] == "disconnect", seq
+        assert seq.count("connect") == 1 and seq.count("disconnect") == 1, seq
+        assert "data" in seq, seq
+        assert event_set_during_disconnect == [False]
+
+    def test_callbacks_fire_once_per_client(self, server, test_port, simulator):
+        connects = []
+        disconnects = []
+        server.set_client_callbacks(on_connect=lambda: connects.append(1), on_disconnect=lambda: disconnects.append(1))
+        server.start()
+        time.sleep(0.2)
+
+        for _ in range(3):
+            server.client_disconnected_event.clear()
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect(("localhost", test_port))
+            client.sendall(simulator.generate_pixel_event())
+            client.close()
+            assert server.wait_for_client_disconnect(timeout=2.0)
+
+        assert len(connects) == 3
+        assert len(disconnects) == 3
+
+    def test_raising_lifecycle_callback_does_not_stop_server(self, server, test_port, simulator):
+        received = []
+
+        def on_connect():
+            raise RuntimeError("connect callback failed")
+
+        def on_disconnect():
+            raise RuntimeError("disconnect callback failed")
+
+        server.set_data_callback(lambda result: received.append(result.n_pixels))
+        server.set_client_callbacks(on_connect=on_connect, on_disconnect=on_disconnect)
+        server.callback_batch_size = 1
+        server.batch_byte_size = server.PACKET_SIZE
+        server.start()
+        time.sleep(0.2)
+
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(("localhost", test_port))
+        client.sendall(simulator.generate_pixel_event())
+        client.close()
+
+        assert server.wait_for_client_disconnect(timeout=2.0)
+        assert server.wait_for_idle(timeout=2.0)
+        assert server.running
+        assert sum(received) == 1
+
+    def test_stop_wakeup_probe_is_not_a_client(self, server, test_port):
+        """``stop()`` connects to its own port to unblock accept(); that must not look like a scan."""
+        connects = []
+        disconnects = []
+        server.set_client_callbacks(on_connect=lambda: connects.append(1), on_disconnect=lambda: disconnects.append(1))
+        server.start()
+        time.sleep(0.2)
+        server.stop()
+        assert connects == []
+        assert disconnects == []
+        assert not server.client_connected
+
+    def test_final_partial_batch_is_processed_at_stop(self, server, test_port, simulator):
+        """Bytes received before stop() are parsed even though the processor is shutting down."""
+        total = []
+        server.set_data_callback(lambda result: total.append(result.n_pixels))
+        # Large batch size so nothing is queued until the disconnect flush.
+        server.callback_batch_size = 10000
+        server.batch_byte_size = server.callback_batch_size * server.PACKET_SIZE
+        server.start()
+        time.sleep(0.2)
+
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(("localhost", test_port))
+        for _ in range(7):
+            client.sendall(simulator.generate_pixel_event())
+        time.sleep(0.05)  # shorter than the 0.1 s partial-flush timeout
+        server.stop()  # closes the client; _handle_client flushes the remaining bytes
+        client.close()
+
+        assert sum(total) == 7
+
+
 # Mark all tests as integration tests
 pytestmark = pytest.mark.integration
 
