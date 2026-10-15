@@ -740,17 +740,32 @@ class ParquetSink:
     def _write_sidecar(self, scan: _ScanState, final_counts: Optional[Dict[str, Any]]) -> None:
         scan.load_extra_meta()
         duration = time.monotonic() - scan.start_mono
+        tables = {name: tw.summary() for name, tw in scan.writers.items()}
+        stop_message = None
+        if final_counts:
+            # The caller hands us the TimePixStop before it can know the parquet outcome
+            # (it learns it from our return value), so fill those fields in the stored copy.
+            stop_message = dict(final_counts)
+            ours = {
+                "parquet_dir": str(scan.scan_dir),
+                "parquet_status": scan.status,
+                "parquet_rows": sum(t.num_rows for t in tables.values()),
+                "parquet_dropped_rows": scan.dropped_rows,
+            }
+            for key, value in ours.items():
+                if stop_message.get(key) is None:
+                    stop_message[key] = value
         summary = ScanSummary(
             **scan.scan_fields,
             status=scan.status,  # type: ignore[arg-type]
             stop_time_iso=_utc_now_iso(),
             acquisition_duration_s=round(duration, 3),
             first_batch_wall_time_iso=scan.first_batch_wall_iso,
-            tables={name: tw.summary() for name, tw in scan.writers.items()},
+            tables=tables,
             dropped_rows=scan.dropped_rows,
             dropped_batches=scan.dropped_batches,
             error=scan.error,
-            stop_message=dict(final_counts) if final_counts else None,
+            stop_message=stop_message,
         )
         atomic_write_json(scan.scan_dir / SCAN_META_FILENAME, summary.model_dump())
 

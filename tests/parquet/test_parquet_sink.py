@@ -212,7 +212,16 @@ class TestLifecycle:
         assert summary.tables["events"].num_rows == 1_000
         assert summary.tables["tdc"].num_rows == 10
         assert summary.tables["events"].files == ["part-000000.parquet"]
-        assert summary.stop_message == {"total_packets": 42, "total_cycles": 7}
+        # The caller's message is kept verbatim and the parquet outcome, which the caller
+        # cannot know yet when it hands the message over, is filled in by the sink.
+        assert summary.stop_message == {
+            "total_packets": 42,
+            "total_cycles": 7,
+            "parquet_dir": str(scan_dir),
+            "parquet_status": "complete",
+            "parquet_rows": 1_000 + 10,
+            "parquet_dropped_rows": 0,
+        }
         assert summary.acquisition_duration_s is not None and summary.stop_time_iso is not None
 
     def test_stop_without_start_is_none_and_second_scan_is_separate(self, tmp_path, scan_meta):
