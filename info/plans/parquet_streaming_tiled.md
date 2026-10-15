@@ -506,7 +506,7 @@ the UI talks to `http://localhost:8000`. The same command serves development, th
 tests and production:
 
 ```
-tiled serve catalog --init --api-key "$TILED_API_KEY" --readable-storage <output_dir> <catalog.db>
+tiled serve catalog --init --api-key "$TILED_API_KEY" --read <output_dir> <catalog.db>
 ```
 
 On the acquisition PC it runs as a **systemd user service** (`tiled-catalog.service`, shipped in
@@ -528,6 +528,31 @@ mount path in the assets, nothing in the files.
   which lags new Pythons — relevant to the 3.14 CI leg).
 - Extra `tiled-test`: `tiled[minimal-server,minimal-client]`, `dask[dataframe]`, `pandas`.
 - `requires-python` moves to `>=3.10` (`app.py:204` already uses `str | None`; pyarrow 26 needs it).
+
+### 8.6 Implementation notes (Phase 2, as built)
+
+- All API names were confirmed against tiled 0.2.19: `Container.new(structure_family,
+  data_sources, key=, metadata=, specs=)`, `TableStructure.from_schema(schema, npartitions)`,
+  `DataSource(management=Management.external, mimetype="application/x-parquet", …)`,
+  `Asset(data_uri, is_directory=False, parameter="data_uris", num=i)`, `update_metadata()`,
+  `delete(recursive=True, external_only=True)`, `include_data_sources()`, `read_partition(i)`,
+  `tiled.catalog.from_uri(..., readable_storage=[...], init_if_not_exists=True)`,
+  `build_app`, `Context.from_app`, `from_context`. The write scopes required are
+  `write:metadata`, `create:node` and `register`; the single-user `--api-key` has them all.
+- The server flag is `--read` / `-r`, not `--readable-storage`. API keys must be alphanumeric
+  (`openssl rand -hex 32`).
+- Tiled's `minimal-server` extra cannot import `tiled.server.app` (missing `ragged`,
+  `sparse`, `ndindex`, …); the `tiled-test` extra therefore uses `tiled[server]`.
+- The scan container is created with `create_container(key, metadata, specs=["tpx3_scan"])`
+  and the three tables with `new(...)` beneath it. The node key defaults to the UI slug
+  (found via the matching `*_meta.json` beside the scan directory, which also yields
+  `raw_tpx3_path` and `energy_calibration` for the `ui` block), else the scan uuid.
+- Idempotency key is a `files_signature` (sorted `(table, filename, size)`) stored under
+  `registration` in the node metadata: same signature → `update_metadata`, different or
+  `--force` → delete and recreate.
+- The UI hook fires 3 s after the streaming process exits (so `_save_on_stop` has written the
+  `_meta.json`), on a `QThread`; the start-up catch-up runs 5 s after launch over the output
+  directory preference, skipped with `tpx-ui --no-catch-up` or an empty `tiled_uri`.
 
 ---
 

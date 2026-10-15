@@ -33,6 +33,7 @@ from .workers import (
     HeartbeatStatus,
     ProcessManager,
     ServalPollerWorker,
+    TiledRegisterWorker,
     ZmqSubscriberWorker,
 )
 
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application window with Operator and Engineering tabs."""
 
-    def __init__(self, autostart_serval: bool = False):
+    def __init__(self, autostart_serval: bool = False, tiled_catch_up: bool = True):
         super().__init__()
 
         self.setWindowTitle("TimePix3 Acquisition")
@@ -59,6 +60,9 @@ class MainWindow(QMainWindow):
         self._current_parquet_dir: Optional[str] = None
         self._current_meta_json: Optional[Path] = None
         self._last_stop_message: Optional[dict] = None
+        # Tiled registration runs off the UI thread; keep references so the QThreads are not
+        # garbage-collected mid-run. Failures are logged, never fatal (catch-up heals them).
+        self._tiled_workers: list[TiledRegisterWorker] = []
 
         # Workers
         self._process_manager: Optional[ProcessManager] = None
@@ -76,6 +80,10 @@ class MainWindow(QMainWindow):
         self._setup_workers()
         if autostart_serval:
             self._start_serval()
+        if tiled_catch_up:
+            # Register whatever a Tiled outage (or a missing key) left unregistered in the
+            # output directory. Delayed so start-up stays snappy; a no-op when tiled_uri is empty.
+            QTimer.singleShot(5000, self._run_tiled_catch_up)
 
     def _setup_ui(self):
         """Initialize the UI components."""
@@ -627,6 +635,12 @@ class MainWindow(QMainWindow):
         if name == "streaming":
             # The sink has closed its files by now; the metadata file has done its job.
             self._cleanup_meta_json()
+            # Register the scan in Tiled. A few seconds later so _save_on_stop has written the
+            # UI's _meta.json (merged into the node as `ui`); the catch-up covers any miss.
+            stop = self._last_stop_message
+            scan_dir = stop.get("parquet_dir") if stop else None
+            if scan_dir and self._current_parquet_dir:
+                QTimer.singleShot(3000, lambda sd=scan_dir: self._register_scan_in_tiled(sd))
 
         # Check if a relevant process stopped while acquiring
         if self._acquiring:
@@ -758,6 +772,68 @@ class MainWindow(QMainWindow):
     def _on_zmq_error(self, error: str):
         """Handle ZMQ error."""
         self._log_manager.append("zmq-backend", f"Error: {error}")
+
+    # ------------------------------------------------------------------
+    # Tiled registration (non-fatal, off the UI thread)
+    # ------------------------------------------------------------------
+
+    def _tiled_settings(self) -> Optional[tuple[str, str]]:
+        """(uri, path) from the preferences, or None when registration is turned off."""
+        prefs = load_operator_preferences()
+        uri = (prefs.get("tiled_uri") or "").strip()
+        if not uri:
+            return None
+        return uri, (prefs.get("tiled_path") or "tpx3").strip("/") or "tpx3"
+
+    def _start_tiled_worker(self, worker: TiledRegisterWorker) -> None:
+        self._tiled_workers.append(worker)
+        worker.finished_with.connect(self._on_tiled_register_done)
+        worker.finished.connect(lambda w=worker: self._tiled_workers.remove(w) if w in self._tiled_workers else None)
+        worker.start()
+
+    def _register_scan_in_tiled(self, scan_dir: str) -> None:
+        settings = self._tiled_settings()
+        if settings is None:
+            self._log_manager.append("system", f"Tiled registration off (tiled_uri empty); scan stays at {scan_dir}")
+            return
+        uri, path = settings
+        self._log_manager.append("system", f"Registering {scan_dir} in Tiled at {uri} under {path}...")
+        self._start_tiled_worker(TiledRegisterWorker(uri, path, scan_dir=scan_dir, parent=self))
+
+    def _run_tiled_catch_up(self) -> None:
+        settings = self._tiled_settings()
+        if settings is None:
+            return
+        uri, path = settings
+        root = load_operator_preferences().get("output_dir") or ""
+        if not root or not Path(root).is_dir():
+            return
+        try:
+            from splash_timepix.tiled_register import find_unregistered
+
+            pending = find_unregistered(Path(root))
+        except ImportError:
+            pending = []
+        if not pending:
+            return
+        self._log_manager.append("system", f"Tiled catch-up: {len(pending)} unregistered scan(s) under {root}")
+        self._start_tiled_worker(TiledRegisterWorker(uri, path, scan_root=root, parent=self))
+
+    @Slot(dict)
+    def _on_tiled_register_done(self, result: dict) -> None:
+        summary = result.get("summary", "")
+        if result.get("ok"):
+            self._log_manager.append("system", f"Tiled: {summary}")
+            self._status_bar.showMessage(f"Tiled: {summary}", 8000)
+        else:
+            target = result.get("scan_dir") or result.get("scan_root") or ""
+            self._log_manager.append(
+                "system",
+                f"WARNING: Tiled registration failed for {target}: {summary}. "
+                "The parquet files are intact; the catch-up at the next start, or "
+                "tpx-tiled-register --unregistered, will retry.",
+            )
+            self._status_bar.showMessage("Tiled registration failed — see Logs", 8000)
 
     @Slot(dict)
     def _on_zmq_control(self, message: dict):
@@ -1011,6 +1087,7 @@ def _load_app_icon() -> QIcon:
 def main():
     """Application entry point."""
     autostart_serval = "--autostart-serval" in sys.argv
+    tiled_catch_up = "--no-catch-up" not in sys.argv
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -1130,7 +1207,7 @@ def main():
     """
     )
 
-    window = MainWindow(autostart_serval=autostart_serval)
+    window = MainWindow(autostart_serval=autostart_serval, tiled_catch_up=tiled_catch_up)
     window.show()
 
     sys.exit(app.exec())

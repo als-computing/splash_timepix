@@ -45,6 +45,11 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["PySide6>=6.5.0", "pyqtgraph>=0.13"]
+# Tiled registration (tpx-tiled-register and the UI hook): the client only.
+tiled = ["tiled[minimal-client]>=0.2.19,<0.3"]
+# In-process Tiled server for the tests. The "minimal-server" extra cannot import
+# tiled.server.app (it lacks ragged/sparse/ndindex), so the full server extra is needed.
+tiled-test = ["tiled[server,minimal-client]>=0.2.19,<0.3", "dask[dataframe]", "pandas"]
 # Pin linters to match .pre-commit-config.yaml (avoids CI vs local version drift).
 dev = [
   "check-manifest",
@@ -65,6 +70,7 @@ test = ["pytest", "pytest-cov", "coverage"]
 tpx-stream = "splash_timepix.app:app"
 tpx-ui = "splash_timepix.ui.main:main"
 tpx-sim = "splash_timepix.simulator_cli:app"
+tpx-tiled-register = "splash_timepix.tiled_register:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

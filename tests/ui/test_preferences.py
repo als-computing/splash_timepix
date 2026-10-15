@@ -45,6 +45,8 @@ def _full_prefs_payload() -> dict:
         "scan_counter": 1,
         "write_parquet": False,
         "parquet_roll_mb": 256,
+        "tiled_uri": "http://tiled.example.org:8000",
+        "tiled_path": "beamline/tpx3",
     }
 
 
@@ -74,6 +76,20 @@ def test_parquet_keys_default_on_and_round_trip(tmp_path: Path):
     path.write_text(json.dumps({"preferences_version": 2, "tdc_frequency": 10.0}))
     loaded = preferences.load_operator_preferences(path)
     assert loaded["write_parquet"] is True and loaded["parquet_roll_mb"] == 512
+    assert loaded["tiled_uri"] == "http://localhost:8000" and loaded["tiled_path"] == "tpx3"
+
+
+def test_tiled_keys_accept_empty_uri_as_off_and_never_hold_a_key(tmp_path: Path):
+    path = tmp_path / "operator_prefs.json"
+    preferences.save_operator_preferences({"tiled_uri": "", "tiled_path": "/a/b/"}, path)
+    loaded = preferences.load_operator_preferences(path)
+    assert loaded["tiled_uri"] == ""  # registration off
+    assert loaded["tiled_path"] == "a/b"
+    assert preferences.validate_and_clamp({"tiled_uri": 42})["tiled_uri"] == "http://localhost:8000"
+    # Security constraint from the plan: the API key is never a preference key.
+    assert not any("api_key" in k or "apikey" in k for k in preferences.default_preferences())
+    preferences.save_operator_preferences({"tiled_api_key": "secret"}, path)
+    assert "tiled_api_key" not in json.loads(path.read_text())
 
 
 def test_round_trip_full_payload(tmp_path: Path):

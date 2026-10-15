@@ -23,7 +23,7 @@ from splash_timepix.parquet_meta import (
 from splash_timepix.parquet_sink import ParquetSink, check_writable
 from splash_timepix.parser import PacketParser
 
-from .conftest import expected_events, make_batch
+from .conftest import expected_events, make_batch, make_random_batch
 
 pytestmark = pytest.mark.unit
 
@@ -345,19 +345,7 @@ class TestErrors:
 
 
 def _random_batch(n: int, *, t0: int, seed: int):
-    """Incompressible-ish pixel batch so byte-based rolling triggers at small sizes."""
-    from splash_timepix.simulator import PacketBuilder
-
-    rng = np.random.default_rng(seed)
-    xs = rng.integers(0, 1024, n)
-    ys = rng.integers(0, 1024, n)
-    tots = rng.integers(0, 1024, n)
-    dts = np.cumsum(rng.integers(1, 5000, n))
-    packets = [
-        PacketBuilder.build_pixel_packet(int(t0 + dts[i]), int(tots[i]), int(xs[i]), int(ys[i])) for i in range(n)
-    ]
-    packets.append(PacketBuilder.build_tdc_packet(int(t0 + dts[-1] + 1), 1, 0))
-    return PacketParser().parse_batch(b"".join(packets))
+    return make_random_batch(n, t0=t0, seed=seed)
 
 
 def _block_writer(sink: ParquetSink):

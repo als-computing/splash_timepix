@@ -1400,6 +1400,11 @@ class OperatorTab(QWidget):
                 "total_counts": float(np.sum(self._cumulative_sum)),
                 "avg_counts_per_cycle": float(np.sum(self._cumulative_sum) / self._total_cycles),
                 "array_shape": list(avg_2d.shape),
+                # UI-only knowledge; tpx-tiled-register merges this file into the Tiled node as `ui`.
+                "energy_calibration": {
+                    "pixel_per_ev": float(self._pixel_per_ev.value()),
+                    "ev_at_mid": float(self._ev_at_mid.value()),
+                },
             }
 
             if self._last_metadata:

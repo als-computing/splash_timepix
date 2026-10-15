@@ -179,6 +179,71 @@ class ZmqSubscriberWorker(QThread):
 
 
 # =============================================================================
+# Tiled registration worker
+# =============================================================================
+
+
+class TiledRegisterWorker(QThread):
+    """Register one scan directory (or catch up a whole root) in Tiled, off the UI thread.
+
+    Failures are reported through ``finished_with`` and never raised: a Tiled outage must
+    not disturb acquisition. The catch-up pass (``scan_root`` given) later registers what
+    was missed. The API key comes from ``TILED_API_KEY``; the UI never holds it.
+    """
+
+    finished_with = Signal(dict)  # {"ok": bool, "summary": str, "scan_dir": str, ...}
+
+    def __init__(
+        self,
+        uri: str,
+        path: str,
+        scan_dir: Optional[str] = None,
+        scan_root: Optional[str] = None,
+        allow_incomplete: bool = False,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.uri = uri
+        self.path = path
+        self.scan_dir = scan_dir
+        self.scan_root = scan_root
+        self.allow_incomplete = allow_incomplete
+
+    def run(self) -> None:
+        result: Dict[str, Any] = {"ok": False, "scan_dir": self.scan_dir, "scan_root": self.scan_root}
+        try:
+            from splash_timepix import tiled_register as tr
+        except ImportError as e:  # tiled client not installed
+            result["summary"] = f"tiled client not installed ({e}); pip install 'splash_timepix[tiled]'"
+            self.finished_with.emit(result)
+            return
+        try:
+            container = tr.connect(self.uri, path=self.path)
+            if self.scan_dir:
+                marker = tr.register_scan(
+                    container, Path(self.scan_dir), allow_incomplete=self.allow_incomplete, uri=self.uri, path=self.path
+                )
+                result.update(ok=True, marker=marker)
+                result["summary"] = f"{marker['action']} {self.path}/{marker['key']} ({marker['status']})"
+            else:
+                outcome = tr.register_unregistered(
+                    container,
+                    Path(self.scan_root or ""),
+                    allow_incomplete=self.allow_incomplete,
+                    uri=self.uri,
+                    path=self.path,
+                )
+                result.update(ok=not outcome["failed"], outcome=outcome)
+                result["summary"] = (
+                    f"catch-up: {len(outcome['registered'])} registered, "
+                    f"{len(outcome['skipped'])} incomplete skipped, {len(outcome['failed'])} failed"
+                )
+        except Exception as e:  # connection refused, auth, read-back…
+            result["summary"] = f"{type(e).__name__}: {e}"
+        self.finished_with.emit(result)
+
+
+# =============================================================================
 # Heartbeat Monitor Worker
 # =============================================================================
 

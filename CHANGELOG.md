@@ -22,6 +22,16 @@ package version that introduced it so the two stay traceable to each other.
 - Heartbeat gains `parquet_*` fields when the sink is enabled.
 - `acq.py --meta-json PATH` merges a Serval detector snapshot into the parquet metadata file.
 - `tools/bench_parquet_sink.py` measures the sink's throughput and cost on a given disk.
+- **Tiled registration**: `tpx-tiled-register <scan_dir>` registers a scan's parquet files in
+  a Tiled catalog in place (no copy), with the node metadata built from the parquet footers
+  and row-group statistics; idempotent re-runs, `--allow-incomplete`, `--force`, and
+  `--unregistered --scan-root DIR` catch-up driven by the `_tiled_registered.json` marker.
+  The UI registers every finished Start/Replay scan and runs the catch-up at start-up
+  (`tpx-ui --no-catch-up`). New preferences `tiled_uri` (empty = off) and `tiled_path`; the
+  API key is taken from `TILED_API_KEY` and never stored. Extras `tiled` and `tiled-test`.
+  Server recipe: `info/outputs/parquet/tiled.md`.
+- `_meta.json` written by the UI now carries `energy_calibration`, `parquet` (dir/status from
+  the stop message) and `stop_message`.
 - `splash_timepix.atomic_io`: shared tmp → fsync → rename helpers (used by the UI
   preferences, the parquet sink and `acq.py`).
 

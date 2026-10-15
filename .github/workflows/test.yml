@@ -22,6 +22,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         python -m pip install -e ".[dev,test]"
+    - name: Install Tiled (server + client) so the Tiled tests run rather than skip
+      if: matrix.python != '3.14'
+      run: |
+        python -m pip install -e ".[tiled-test]"
     - name: Test
       run: |
         python -m pytest -m ""

@@ -99,6 +99,11 @@ def default_preferences() -> Dict[str, Any]:
         # passed to tpx-stream --parquet-roll-mb.
         "write_parquet": True,
         "parquet_roll_mb": 512,
+        # Tiled registration of finished scans. The server runs on the acquisition PC
+        # (see info/outputs/parquet/tiled.md); an empty tiled_uri turns registration
+        # off. The API key is NOT stored here: it comes from TILED_API_KEY.
+        "tiled_uri": "http://localhost:8000",
+        "tiled_path": "tpx3",
     }
 
 
@@ -170,6 +175,14 @@ def _validate_bool(value: Any, fallback: bool, name: str) -> bool:
     if isinstance(value, bool):
         return value
     logger.warning("Pref %s: %r not a bool; using default %r", name, value, fallback)
+    return fallback
+
+
+def _validate_str(value: Any, fallback: str, name: str) -> str:
+    """Any string is accepted (including empty, which some keys use as 'off'); others fall back."""
+    if isinstance(value, str):
+        return value.strip()
+    logger.warning("Pref %s: %r not a string; using default %r", name, value, fallback)
     return fallback
 
 
@@ -300,6 +313,12 @@ def validate_and_clamp(raw: Any) -> Dict[str, Any]:
         fallback=defaults["parquet_roll_mb"],
         name="parquet_roll_mb",
     )
+    out["tiled_uri"] = _validate_str(
+        raw.get("tiled_uri", defaults["tiled_uri"]), fallback=defaults["tiled_uri"], name="tiled_uri"
+    )
+    out["tiled_path"] = _validate_str(
+        raw.get("tiled_path", defaults["tiled_path"]), fallback=defaults["tiled_path"], name="tiled_path"
+    ).strip("/")
     return out
 
 

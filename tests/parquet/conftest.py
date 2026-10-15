@@ -42,6 +42,24 @@ def make_batch(
     return PacketParser().parse_batch(b"".join(packets))
 
 
+def make_random_batch(n: int, *, t0: int, seed: int, tdc: bool = True) -> BatchParseResult:
+    """Incompressible-ish pixel batch (random x/y/tot, jittered t) so byte-based rolling triggers at small sizes.
+
+    ``make_batch`` compresses to well under a byte per row, which never rolls a 20 kB file.
+    """
+    rng = np.random.default_rng(seed)
+    xs = rng.integers(0, 1024, n)
+    ys = rng.integers(0, 1024, n)
+    tots = rng.integers(0, 1024, n)
+    dts = np.cumsum(rng.integers(1, 5000, n))
+    packets = [
+        PacketBuilder.build_pixel_packet(int(t0 + dts[i]), int(tots[i]), int(xs[i]), int(ys[i])) for i in range(n)
+    ]
+    if tdc:
+        packets.append(PacketBuilder.build_tdc_packet(int(t0 + dts[-1] + 1), 1, 0))
+    return PacketParser().parse_batch(b"".join(packets))
+
+
 def expected_events(n_pixels: int, t0: int, dt: int = 10) -> Dict[str, np.ndarray]:
     i = np.arange(n_pixels)
     return {
