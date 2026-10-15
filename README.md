@@ -96,7 +96,8 @@ Additional markdown guides in the repository:
 - [Socket server](info/SOCKET_SERVER_README.md) — threading, ring buffer, and parser callback behavior
 - [Sample start message](info/SAMPLE_START_MESSAGE.md) — example ZMQ start message (wire format and fields)
 - [UDP receive buffers (first-time Linux setup)](info/UDP_RECEIVER_BUFFER_LIMITS.md) —  raise `net.core.rmem_*` for Serval/streaming hosts (`sysctl.d` drop-in)
-- [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration).
+- [Testing guide](info/TESTING_GUIDE.md) — manual and automated testing (simulator, ZMQ subscribers, ArroyoXPS integration, test-suite layout and markers).
+- [Parquet output and Tiled](info/outputs/parquet/README.md) — streaming parquet files per scan, reading them, registering them in Tiled; [format reference](info/outputs/parquet/format.md), [Tiled server recipe](info/outputs/parquet/tiled.md), [demo notebook](info/outputs/parquet/examples/demo_for_review.ipynb).
 - [Centroider tutorial](info/centroider_tutorial.md) — scientist's guide to the Centroider tab (clustering parameter sweeps on `.tpx3` files).
 
 ## Architecture

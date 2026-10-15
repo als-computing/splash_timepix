@@ -34,6 +34,14 @@ package version that introduced it so the two stay traceable to each other.
   the stop message) and `stop_message`.
 - `splash_timepix.atomic_io`: shared tmp → fsync → rename helpers (used by the UI
   preferences, the parquet sink and `acq.py`).
+- Documentation under `info/outputs/parquet/`: the operator/analyst manual (`README.md`, with
+  the acceptance checklist), the executed demonstration notebook
+  `examples/demo_for_review.ipynb` (+ `demo_helpers.py`) covering the three criteria on
+  localhost with the simulator, and `examples/convert_tpx3_by_replay.md`.
+- Tests: `tests/parquet/` (sink unit tests, metadata readers, streaming round-trip incl.
+  `kill -9` mid-scan), `tests/tiled/` (in-process server, CLI exit codes, `tiled serve catalog`
+  recipe), `tests/ui/test_save_on_stop.py`, `tests/core/test_serval_snapshot.py`;
+  `tests/ui/conftest.py` creates one offscreen `QApplication` for the package.
 
 ### Changed
 

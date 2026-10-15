@@ -180,6 +180,36 @@ The schema-only assertions live inside `class TestSchemas` in that file; the
 remaining tests in the module spin up the streaming server via the
 `streaming_rig` fixture and assert on real ZMQ traffic.
 
+#### Test-suite layout
+
+| Folder | What it covers | Needs |
+|---|---|---|
+| `tests/core/` | packet parser, simulator, `SocketDataServer` lifecycle callbacks, Serval detector snapshot | core install |
+| `tests/streaming/` | `tpx-stream` end to end: start/event/stop over ZMQ, flush timing, SIGTERM, main workflow | core install |
+| `tests/parquet/` | `ParquetSink` unit tests, parquet metadata readers, parquet output of a real `tpx-stream` run (row counts, rolling, `kill -9` mid-scan) | core install (`pyarrow` is a core dependency) |
+| `tests/tiled/` | `tpx-tiled-register` against an in-process Tiled server, the CLI exit codes, the `tiled serve catalog` recipe | `pip install -e .[tiled-test]` (skipped otherwise) |
+| `tests/ui/` | preferences file, log manager, single-instance lock, `_meta.json` save-on-stop (offscreen Qt) | `pip install -e .[ui]` (skipped otherwise) |
+
+Shared fixtures live in `tests/conftest.py` (`streaming_rig`, `free_port`), `tests/parquet/conftest.py`
+(batch builders, expected event counts) and `tests/tiled/conftest.py` (`tiled_rig`, `write_scan`).
+
+#### Markers and the default selection
+
+`pyproject.toml` runs `-m "not slow"` by default, so the quick suite (~2.5 min, 197 tests)
+excludes the 15 multi-second streaming, parquet and Tiled integration runs. To run everything:
+
+```bash
+pytest -m ""                 # whole suite incl. slow (~6 min; 212 tests as of Phase 4)
+pytest -m slow               # only the slow integration tests
+pytest tests/tiled -q        # only the Tiled registration tests
+pytest tests/ui -q           # only the UI tests (headless; QT_QPA_PLATFORM=offscreen is set by the tests)
+```
+
+The Tiled tests start a real Tiled application in-process (`tiled.server.app.build_app`) and, in
+`tests/tiled/test_tiled_server_cli.py`, a `tiled serve catalog` subprocess on a free port; both
+need the `tiled-test` extra (`tiled[server,minimal-client]`, `dask[dataframe]`, `pandas`). CI
+installs that extra on Python 3.12 and 3.13 so these tests run rather than skip.
+
 ### Method 4: Real hardware (TimePix3)
 
 1. Start server: `cd /path/to/splash_timepix` then `python -m splash_timepix.app --tdc-frequency 1000`

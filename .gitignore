@@ -33,3 +33,6 @@ logs/
 /.asi_local_backup/
 /ASI_REMOVAL_BACKUP.bundle
 tools/tpx3parser/target/
+
+# Jupyter
+.ipynb_checkpoints/

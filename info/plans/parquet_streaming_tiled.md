@@ -795,6 +795,31 @@ acquisition PC with the real detector, and the result — date, software version
 in `info/outputs/parquet/acceptance/<date>.md`. That record, together with the executed
 notebook, is what is shown to the group lead; the phase is not done until it exists.
 
+### 10.1 Implementation notes (Phases 3 and 4, as built)
+
+- **Tests.** 212 tests after Phase 4 (`pytest -m ""`, about 6 min; the default `-m "not slow"`
+  selection is 197 tests in about 2.5 min). `tests/ui/conftest.py` creates one offscreen `QApplication`
+  before any UI module is collected: `test_log_manager.py` only needs a `QCoreApplication`, but
+  Qt cannot upgrade one to a `QApplication` later, and a widget built on a bare
+  `QCoreApplication` aborts the whole pytest process (observed once `test_save_on_stop.py`
+  was added).
+- **Notebook.** `examples/demo_for_review.ipynb` runs in about one minute on localhost; it is
+  generated and executed by a build script (nbformat + nbclient) and committed with its
+  outputs. `demo_helpers.Demo` starts `tpx-stream` (parquet on, `--exit-on-disconnect`,
+  roll 0.25 MB, row groups of 20 k rows so files appear every few seconds), `tpx-sim`
+  (`--auto-start`, through a `python -c` wrapper that turns on INFO logging so the simulator's
+  final "Sent events" line is available as ground truth) and `tiled serve catalog --init
+  --api-key … --read <data dir>`; `restart_tiled()` restarts the server on the same catalog
+  file for criterion 3.
+- **Simulator limit.** `PacketSimulator.generate_stream` keeps a Python list of pending events
+  and pops from its front; above roughly 30 k packets/s (less on a loaded machine) the backlog
+  grows faster than it drains and a 20 s run can take minutes. The notebook therefore streams
+  at 15 k hits/s. This does not affect the real detector path; the sink's own ceiling is
+  measured by `tools/bench_parquet_sink.py`.
+- **Acceptance run.** Not performed in this session: it needs the detector and `live-cli`. The
+  checklist in the manual (§7) is ready to be executed and recorded in
+  `info/outputs/parquet/acceptance/<date>.md`.
+
 ---
 
 ## 11. Phase 5 — live visibility in Tiled (only if asked for)
