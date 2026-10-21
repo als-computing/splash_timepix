@@ -52,8 +52,8 @@ For every **Start** or **Replay** run (parquet on by default), next to the
 
 - There is deliberately **no parquet switch in the UI**. Parquet output is on for every Start
   and Replay run unless `write_parquet` is set to `false` in the preferences file (below).
-- *Sample*, *ESAF*, *Notes* — free text, stored in every parquet footer as `user.sample`,
-  `user.esaf`, `user.notes` and searchable in Tiled. Fill them in before pressing Start.
+- *ESAF*, *Sample*, *Notes* — free text, stored in every parquet footer as `user.esaf`,
+  `user.sample`, `user.notes` and searchable in Tiled. Fill them in before pressing Start.
 - *Pipeline queues → Parquet* row during a run: `writing · 12.3M rows · 4 files`, plus
   `N dropped` in yellow if the writer fell behind, `error` in red if the disk failed.
 
@@ -216,7 +216,7 @@ hit and disk bandwidth, pass/fail per step).
 | # | Step | Expected |
 |---|---|---|
 | 1 | Tiled service running (`systemctl --user status tiled-catalog`); `TILED_API_KEY` set in the UI's environment | active; `echo $TILED_API_KEY` non-empty in the launcher shell |
-| 2 | Operator tab: Sample/ESAF/Notes filled; press **Start** at the highest count rate used in operation | Parquet row shows `writing`, rows increasing, 0 dropped |
+| 2 | Operator tab: ESAF/Sample/Notes filled; press **Start** at the highest count rate used in operation | Parquet row shows `writing`, rows increasing, 0 dropped |
 | 3 | While acquiring, in a terminal: `pd.read_parquet("<output>/<uuid>/events")` after the first roll | Returns rows; a `.part-*.tmp` is present alongside |
 | 4 | Stop. Check `_scan_meta.json`, the Logs tab stop line, and the `_meta.json` `parquet` block | `status: complete`, `parquet.dir` equals the scan directory |
 | 5 | `tables.events.num_rows` vs `tpx3dump` pixel count of the renamed `.tpx3` | equal (TDC/control counted separately) |

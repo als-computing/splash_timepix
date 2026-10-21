@@ -439,8 +439,8 @@ class OperatorTab(QWidget):
         # Operator metadata, embedded in every parquet footer (and searchable in Tiled).
         self._meta_inputs: dict[str, QLineEdit] = {}
         for key, title, placeholder in (
-            ("sample", "Sample", "e.g. Cu foil 10 µm"),
             ("esaf", "ESAF", "e.g. 12345"),
+            ("sample", "Sample", "e.g. Cu foil 10 µm"),
             ("notes", "Notes", "free text"),
         ):
             row = QHBoxLayout()
