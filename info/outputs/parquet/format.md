@@ -85,7 +85,7 @@ Per-scan fields (identical in every file of the scan):
 | `splash_timepix_version`, `pyarrow_version`, `hostname` | str | provenance |
 | `writer_config` | object | `roll_bytes`, `roll_seconds`, `row_group_rows`, `compression`, `encodings`, `on_full` |
 | `source` | object | `{"kind": "live" \| "replay" \| "simulator", "path": …}` |
-| `user` | object | operator-entered fields from the UI (`sample`, `proposal`, `notes`); may be empty |
+| `user` | object | operator-entered fields from the UI (`sample`, `esaf`, `notes`); may be empty |
 | `detector` | object | Serval snapshot taken by `acq.py` just before the acquisition starts: `/dashboard`, `/detector/config`, `/detector/chips`; empty for replay and simulator runs |
 
 Per-file fields:

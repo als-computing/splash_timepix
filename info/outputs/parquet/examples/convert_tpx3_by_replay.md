@@ -10,8 +10,8 @@ live scan, with `source.kind = "replay"` and `source.path` pointing at the `.tpx
 ## Steps
 
 1. **Start the UI** with Serval running (`tpx-ui`; the replay needs live-cli, not the
-   detector). Make sure *Write parquet* is ticked on the Operator tab.
-2. Optionally fill in *Sample* / *Proposal* / *Notes*; they are stored in the parquet
+   detector). Parquet output is on unless `write_parquet` is false in `operator_prefs.json`.
+2. Optionally fill in *Sample* / *ESAF* / *Notes*; they are stored in the parquet
    footers of the converted scan like for a live run.
 3. Press **↺ Replay** and pick the `.tpx3` file in the dialog (`TPX3 Files (*.tpx3)`).
 4. Watch the *Pipeline queues → Parquet* row: `writing · N rows · M files`. The replay runs at

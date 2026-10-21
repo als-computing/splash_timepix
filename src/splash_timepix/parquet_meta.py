@@ -149,7 +149,7 @@ class ScanFields(BaseModel):
 
     writer_config: WriterConfig
     source: SourceInfo = Field(default_factory=SourceInfo)
-    #: Operator-entered values (sample, proposal, notes…) from ``--parquet-meta-json``.
+    #: Operator-entered values (sample, esaf, notes…) from ``--parquet-meta-json``.
     user: Dict[str, Any] = Field(default_factory=dict)
     #: Serval snapshot taken by ``acq.py`` from ``--parquet-meta-json``; empty for replay/simulator.
     detector: Dict[str, Any] = Field(default_factory=dict)

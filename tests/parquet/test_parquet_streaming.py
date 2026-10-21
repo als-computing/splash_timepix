@@ -68,7 +68,7 @@ def _split(messages):
 
 def test_parquet_equals_wire_exactly_and_stop_points_at_it(streaming_rig, tmp_path):
     meta_json = tmp_path / "meta.json"
-    meta_json.write_text(json.dumps({"user": {"sample": "Cu foil", "proposal": "P-1"}, "detector": {"bias": 100}}))
+    meta_json.write_text(json.dumps({"user": {"sample": "Cu foil", "esaf": "P-1"}, "detector": {"bias": 100}}))
     rig = streaming_rig(
         tdc_frequency=1000.0,
         cps=50_000.0,
@@ -125,7 +125,7 @@ def test_parquet_equals_wire_exactly_and_stop_points_at_it(streaming_rig, tmp_pa
     assert meta.scan_name == stop["scan_name"]
     assert meta.tdc_frequency_hz == 1000.0 and meta.collapse_y is True and meta.mode == "timing"
     assert meta.source.kind == "simulator"
-    assert meta.user == {"sample": "Cu foil", "proposal": "P-1"}
+    assert meta.user == {"sample": "Cu foil", "esaf": "P-1"}
     assert meta.detector == {"bias": 100}
 
     # Sidecar: complete, counts agree with the files, carries the stop message.

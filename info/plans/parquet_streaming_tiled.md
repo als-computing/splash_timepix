@@ -251,7 +251,7 @@ The whole body of `offer()` is wrapped so it can never raise into `data_callback
   `--parquet-row-group-rows 1000000`, `--parquet-on-full drop|block`, `--parquet-source`
   (§7) and `--parquet-meta-json PATH` — a JSON file the sink embeds in every footer. It
   carries two sub-dicts written by two different processes: `user`, the operator-entered
-  values (sample, proposal, notes), written by the UI before it launches `tpx-stream`; and
+  values (sample, ESAF, notes), written by the UI before it launches `tpx-stream`; and
   `detector`, a snapshot of Serval's `/dashboard`, `/detector/config` and `/detector/chips`
   taken with the existing `ServalClient` (`serval_client/lib.py:55-74,125-134`) — detector
   type, chip IDs, Serval version, bias and thresholds — merged into the same file by `acq.py`
@@ -481,7 +481,7 @@ directly with pyarrow or Dask.
   `validate_and_clamp()` (`ui/preferences.py:59,167`) or it is silently dropped on load; bump
   `PREFERENCES_VERSION`.
 - Operator tab: a "Write parquet" checkbox beside the output directory field; the parquet root
-  is the same output directory. Three optional text fields — **sample**, **proposal**,
+  is the same output directory. Three optional text fields — **sample**, **ESAF**,
   **notes** — are new (the tab has none today, `ui/operator_tab.py`); `start_streaming_server`
   writes them to a JSON file in the output directory and passes it as `--parquet-meta-json`, so
   they reach every footer as the `user` sub-dict (§6.3, §7). The same file carries the
@@ -816,6 +816,11 @@ notebook, is what is shown to the group lead; the phase is not done until it exi
   grows faster than it drains and a 20 s run can take minutes. The notebook therefore streams
   at 15 k hits/s. This does not affect the real detector path; the sink's own ceiling is
   measured by `tools/bench_parquet_sink.py`.
+- **No parquet switch in the UI (2026-10-21).** The "Write parquet" checkbox described in §8.3
+  was removed at the beamline's request: operators should not see the option. Parquet stays on
+  by default and is controlled only by `write_parquet` in `operator_prefs.json`, which the UI
+  always writes out so the key is there to flip. The operator field *Proposal* was renamed
+  *ESAF* (metadata key `user.esaf`).
 - **Acceptance run.** Not performed in this session: it needs the detector and `live-cli`. The
   checklist in the manual (§7) is ready to be executed and recorded in
   `info/outputs/parquet/acceptance/<date>.md`.

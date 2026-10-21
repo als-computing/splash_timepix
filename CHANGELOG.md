@@ -53,3 +53,5 @@ package version that introduced it so the two stay traceable to each other.
   start can no longer be overtaken by the first flush.
 - `requires-python` is now `>=3.10`; `pyarrow>=16` is a core dependency.
 - Tests moved into `tests/{core,streaming,ui,parquet}/`.
+- Parquet output has no switch in the UI: it is on by default and controlled only by the
+  `write_parquet` preference. The operator field *Proposal* is now *ESAF* (`user.esaf`).

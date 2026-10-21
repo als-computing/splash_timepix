@@ -10,7 +10,6 @@ from typing import Optional, Tuple, Union
 import numpy as np
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -432,25 +431,16 @@ class OperatorTab(QWidget):
         settings_layout.addLayout(out_row)
         self._sync_output_path_tooltip()
 
-        # Parquet output toggle (Start and Replay modes). On by default.
-        parquet_row = QHBoxLayout()
-        self._write_parquet_check = QCheckBox("Write parquet")
-        self._write_parquet_check.setChecked(True)
-        self._write_parquet_check.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
-        self._write_parquet_check.setToolTip(
-            "Also write every event, TDC edge and control packet of the scan to parquet files under "
-            "<output>/<scan uuid>/ while acquiring (Start and Replay modes). The .tpx3 is written regardless. "
-            "See info/outputs/parquet/format.md."
-        )
-        parquet_row.addWidget(self._write_parquet_check)
-        parquet_row.addStretch()
-        settings_layout.addLayout(parquet_row)
+        # Parquet output (Start and Replay modes) is on by default and deliberately has no
+        # widget: it is controlled by the `write_parquet` key of operator_prefs.json so that
+        # operators do not see a switch, while it stays easy to turn off by hand.
+        self._write_parquet = True
 
         # Operator metadata, embedded in every parquet footer (and searchable in Tiled).
         self._meta_inputs: dict[str, QLineEdit] = {}
         for key, title, placeholder in (
             ("sample", "Sample", "e.g. Cu foil 10 µm"),
-            ("proposal", "Proposal", "e.g. ALS-12345"),
+            ("esaf", "ESAF", "e.g. 12345"),
             ("notes", "Notes", "free text"),
         ):
             row = QHBoxLayout()
@@ -826,7 +816,7 @@ class OperatorTab(QWidget):
             "n_bins": int(self._n_bins_input.value()),
             "duration": self._duration_input.value(),
             "output_dir": self._output_input.text(),
-            "write_parquet": self._write_parquet_check.isChecked(),
+            "write_parquet": self._write_parquet,
             "user_metadata": {k: w.text().strip() for k, w in self._meta_inputs.items() if w.text().strip()},
         }
 
@@ -845,7 +835,7 @@ class OperatorTab(QWidget):
             "n_bins": int(self._n_bins_input.value()),
             "duration": int(self._duration_input.value()),
             "output_dir": self._output_input.text(),
-            "write_parquet": self._write_parquet_check.isChecked(),
+            "write_parquet": self._write_parquet,
         }
 
     def load_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:
@@ -864,7 +854,7 @@ class OperatorTab(QWidget):
         self._n_bins_input.setValue(int(prefs["n_bins"]))
         self._duration_input.setValue(int(prefs["duration"]))
         self._output_input.setText(str(prefs["output_dir"]))
-        self._write_parquet_check.setChecked(bool(prefs["write_parquet"]))
+        self._write_parquet = bool(prefs["write_parquet"])
         self._sync_output_path_tooltip()
 
     def save_operator_preferences(self, path: Optional[Union[Path, str]] = None) -> None:

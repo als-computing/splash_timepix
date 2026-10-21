@@ -110,7 +110,7 @@ class TestCriterion3MetadataFromFilesIntoDatabase:
         rig.restart()
         c = rig.client["tpx3"]
         assert list(c.search(Key("scan_name") == "scan-1")) == [marker["key"]]
-        assert list(c.search(Key("user.proposal") == "P-1")) == [marker["key"]]
+        assert list(c.search(Key("user.esaf") == "P-1")) == [marker["key"]]
         after = dict(c[marker["key"]].metadata)
         assert after == before
         assert len(c[marker["key"]]["events"].read()) == pq.read_table(scan_dir / "events").num_rows

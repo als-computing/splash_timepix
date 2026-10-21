@@ -17,7 +17,7 @@ set-up in [tiled.md](tiled.md), and the design in `info/plans/parquet_streaming_
 
 ## 1. What you get
 
-For every **Start** or **Replay** run with "Write parquet" checked (the default), next to the
+For every **Start** or **Replay** run (parquet on by default), next to the
 `.tpx3` that Serval writes:
 
 ```
@@ -50,9 +50,10 @@ For every **Start** or **Replay** run with "Write parquet" checked (the default)
 
 **Operator tab**
 
-- *Write parquet* checkbox (on by default) — per run; remembered across restarts.
-- *Sample*, *Proposal*, *Notes* — free text, stored in every parquet footer as `user.sample`
-  etc. and searchable in Tiled. Fill them in before pressing Start.
+- There is deliberately **no parquet switch in the UI**. Parquet output is on for every Start
+  and Replay run unless `write_parquet` is set to `false` in the preferences file (below).
+- *Sample*, *ESAF*, *Notes* — free text, stored in every parquet footer as `user.sample`,
+  `user.esaf`, `user.notes` and searchable in Tiled. Fill them in before pressing Start.
 - *Pipeline queues → Parquet* row during a run: `writing · 12.3M rows · 4 files`, plus
   `N dropped` in yellow if the writer fell behind, `error` in red if the disk failed.
 
@@ -61,7 +62,7 @@ is closed):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `write_parquet` | `true` | the checkbox |
+| `write_parquet` | `true` | parquet output on/off for Start and Replay runs (no UI switch) |
 | `parquet_roll_mb` | `512` | file roll size, 64–4096 MB |
 | `tiled_uri` | `"http://localhost:8000"` | Tiled server; empty string turns registration off |
 | `tiled_path` | `"tpx3"` | container under which scans are registered |
@@ -198,7 +199,7 @@ take the paths from `scan.include_data_sources()["events"].data_sources()[0].ass
 |---|---|---|
 | Stop message / `_scan_meta.json` says `incomplete`, `dropped_rows > 0` | The writer fell behind and `--parquet-on-full drop` dropped batches; the live view was protected. | The `.tpx3` is complete: Replay it with parquet on to regenerate, then `tpx-tiled-register --force`. Consider a faster disk, a larger `--parquet-queue-max-rows`, or `--parquet-on-full block` for runs where parquet is the record. |
 | `error` status, Parquet row red | An I/O error (disk full, permission); the sink gave up for this scan, the live view continued. | Check free space / permissions. Completed files are valid; `.tmp` files are not. Replay to regenerate. |
-| `tpx-stream` refuses to start: "--parquet-dir … is not writable" | Preflight check. | Fix the directory or untick *Write parquet*. |
+| `tpx-stream` refuses to start: "--parquet-dir … is not writable" | Preflight check. | Fix the directory or set `write_parquet` to `false` in the preferences file. |
 | A `.part-*.parquet.tmp` file is left in a table directory | The process was killed while writing that file (or it is still running). | Ignore it: readers skip dot-files. Delete it once the scan is definitely over. No `_scan_meta.json` → the scan did not finish; register with `--allow-incomplete` if the completed files are useful. |
 | `pandas.read_parquet` on an *empty* table directory fails | Should not happen: every table always has at least one (possibly empty) file. | Report it. |
 | Log: "Tiled registration failed … Connection refused" | Tiled server down or wrong `tiled_uri`. | Files are intact. Start the service; the UI catch-up at the next start, or `tpx-tiled-register --unregistered`, registers it. |
@@ -215,7 +216,7 @@ hit and disk bandwidth, pass/fail per step).
 | # | Step | Expected |
 |---|---|---|
 | 1 | Tiled service running (`systemctl --user status tiled-catalog`); `TILED_API_KEY` set in the UI's environment | active; `echo $TILED_API_KEY` non-empty in the launcher shell |
-| 2 | Operator tab: *Write parquet* ticked, Sample/Proposal/Notes filled; press **Start** at the highest count rate used in operation | Parquet row shows `writing`, rows increasing, 0 dropped |
+| 2 | Operator tab: Sample/ESAF/Notes filled; press **Start** at the highest count rate used in operation | Parquet row shows `writing`, rows increasing, 0 dropped |
 | 3 | While acquiring, in a terminal: `pd.read_parquet("<output>/<uuid>/events")` after the first roll | Returns rows; a `.part-*.tmp` is present alongside |
 | 4 | Stop. Check `_scan_meta.json`, the Logs tab stop line, and the `_meta.json` `parquet` block | `status: complete`, `parquet.dir` equals the scan directory |
 | 5 | `tables.events.num_rows` vs `tpx3dump` pixel count of the renamed `.tpx3` | equal (TDC/control counted separately) |

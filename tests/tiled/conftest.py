@@ -88,7 +88,7 @@ def scan_meta() -> dict:
         detector_size_x=256,
         detector_size_y=256,
         source={"kind": "simulator"},
-        user={"sample": "Cu foil", "proposal": "P-1"},
+        user={"sample": "Cu foil", "esaf": "P-1"},
         detector={"serval_version": "3.3.2", "chip_ids": ["W0028_H07"]},
     )
 
